@@ -73,7 +73,7 @@ class StateconstraintCallback(LazyConstraintCallback):
         print("callbacks: ",self.number_of_calls)
  
 for timeVar in range(30,31,10):
-    for countVar in range(20,21,5):
+    for countVar in range(45,46,5):
         matlabData=scipy.io.loadmat('feuerData%d_%d.mat' % (countVar,timeVar))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
@@ -94,84 +94,59 @@ for timeVar in range(30,31,10):
         #define reduced ones
         names=['']*Acol
 
-        
-        lpFileName="feuer.lp"
-        lpFullFileName="feuerFull.lp"
-        
-        
-        write = 1
         full = 0
-        write = 1
         order = 0
         modelFull=cplex.Cplex()
         model = cplex.Cplex()
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
-            if write:
-                model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["C"])
-                modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["C"])
-        print("Hmm")
+            model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["C"])
+            modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["C"])
+        print("Finished adding continuous variables")
         for i in range(contVarN+1,intVarN+contVarN+1):
             names[i-1]="bin"+str(i-1)
-            if write:
-                model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
-                modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
-                if order:
-                    model.order.set([(names[i-1],int(tn+1)-int((i-contVarN)*tn/intVarN),model.order.branch_direction.up)])
-        print("hier")
+            model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
+            modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
+            if order:
+                model.order.set([(names[i-1],int(tn+1)-int((i-contVarN)*tn/intVarN),model.order.branch_direction.up)])
+        print("finished adding integer variables")
         Aredcoo=Amipred.tocoo()
         Acoo=Amip.tocoo()
         Aextcoo=Amipext.tocoo()
-        
-        if write:
-            if not full:
-                rows=[]
-                for i in range(0,Arow):
-                    rows.append([[],[]])
-                
-                for i,j,v in itertools.izip(Aredcoo.row, Aredcoo.col, Aredcoo.data):
-                    rows[i][0].append(names[j])
-                    rows[i][1].append(v)
-                
-                
-                print("Huya")
-                model.linear_constraints.add(lin_expr = rows, senses = ["L"]*Arow, rhs = np.transpose(b_Ured).tolist()[0])
-                model.linear_constraints.add(lin_expr = rows, senses = ["G"]*Arow, rhs = np.transpose(b_Lred).tolist()[0])
-                
-                model2=cplex.Cplex(lpFileName)
-            print("her")
-            if full:
-                rows2=[]
-                for i in range(0,Amip.shape[0]):
-                    rows2.append([[],[]])
-                
-                for i,j,v in itertools.izip(Acoo.row, Acoo.col, Acoo.data):
-                    rows2[i][0].append(names[j])
-                    rows2[i][1].append(v)
-                modelFull.linear_constraints.add(lin_expr = rows2, senses = ["L"]*Amip.shape[0], rhs = np.transpose(b_U).tolist()[0])
-                modelFull.linear_constraints.add(lin_expr = rows2, senses = ["G"]*Amip.shape[0], rhs = np.transpose(b_L).tolist()[0])
-                
+        if not full:
+            rows=[]
+            for i in range(0,Arow):
+                rows.append([[],[]])
+            
+            for i,j,v in itertools.izip(Aredcoo.row, Aredcoo.col, Aredcoo.data):
+                rows[i][0].append(names[j])
+                rows[i][1].append(v)
+            
+            model.linear_constraints.add(lin_expr = rows, senses = ["L"]*Arow, rhs = np.transpose(b_Ured).tolist()[0])
+            model.linear_constraints.add(lin_expr = rows, senses = ["G"]*Arow, rhs = np.transpose(b_Lred).tolist()[0])    
         else:
-            if full:
-                modelFull=cplex.Cplex(lpFullFileName)
-            else:
-                model=cplex.Cplex(lpFileName)
-        
-          
+            rows2=[]
+            for i in range(0,Amip.shape[0]):
+                rows2.append([[],[]])
+            
+            for i,j,v in itertools.izip(Acoo.row, Acoo.col, Acoo.data):
+                rows2[i][0].append(names[j])
+                rows2[i][1].append(v)
+            modelFull.linear_constraints.add(lin_expr = rows2, senses = ["L"]*Amip.shape[0], rhs = np.transpose(b_U).tolist()[0])
+            modelFull.linear_constraints.add(lin_expr = rows2, senses = ["G"]*Amip.shape[0], rhs = np.transpose(b_L).tolist()[0])
+      
         if not full:
             lazy_cb = model.register_callback(StateconstraintCallback)
             #branch_cb = model.register_callback(TemperatureEstimateCallback)
-            lazy_cb2 = model2.register_callback(StateconstraintCallback)
             lazy_cb.number_of_calls = 0
-            lazy_cb2.number_of_calls = 0
-        #print(model.variables.get_indices('bin22454'))
-        #model=hmpf
-        print("yay")
+        print("Finished adding constraints")
         try:
             if not full:
                 start=model.get_time()
+                
                 model.parameters.mip.tolerances.mipgap.set(0.01)
                 #model.parameters.dettimelimit.set(50000.0)
+                print("Starting to solve model with callbacks")
                 model.solve()
                 end=model.get_time()
                 duration=end-start
@@ -180,6 +155,7 @@ for timeVar in range(30,31,10):
                 start=modelFull.get_time()
                 modelFull.parameters.mip.tolerances.mipgap.set(0.01)
                 #modelFull.parameters.dettimelimit.set(2000000.0)
+                print("Starting to solve full model without callbacks")
                 modelFull.solve()
                 end=modelFull.get_time()
                 duration=end-start
@@ -213,6 +189,7 @@ for timeVar in range(30,31,10):
             x_k=np.transpose(np.array([x]))
         #state=b_Uext-np.matmul(Amipext,x_k)
         state2=Amipext*x_k-b_Lext
+        print("saving result and duration")
         if full:
             scipy.io.savemat('stateFullxn%dtn%d.mat' % (xn,tn), dict([('x_k',x),('duration',duration)]))
             

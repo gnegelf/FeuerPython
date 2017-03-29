@@ -1,0 +1,3 @@
+#Ignoriere alle matlab .mat files
+/*.mat
+waldbrand.py~
