@@ -72,9 +72,10 @@ class StateconstraintCallback(LazyConstraintCallback):
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
  
-for timeVar in range(30,31,10):
-    for countVar in range(45,46,5):
-        matlabData=scipy.io.loadmat('feuerData%d_%d.mat' % (countVar,timeVar))
+scenario=2;
+for countVar in range(30,46,5):
+    for timeVar in range(30,61,10):
+        matlabData=scipy.io.loadmat('feuerData%d_%d_%d.mat' % (countVar,timeVar,scenario))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
         b_Ured=matlabData['b_U2']
@@ -109,7 +110,7 @@ for timeVar in range(30,31,10):
             modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
             if order:
                 model.order.set([(names[i-1],int(tn+1)-int((i-contVarN)*tn/intVarN),model.order.branch_direction.up)])
-        print("finished adding integer variables")
+        print("Finished adding integer variables")
         Aredcoo=Amipred.tocoo()
         Acoo=Amip.tocoo()
         Aextcoo=Amipext.tocoo()
@@ -145,7 +146,7 @@ for timeVar in range(30,31,10):
                 start=model.get_time()
                 
                 model.parameters.mip.tolerances.mipgap.set(0.01)
-                #model.parameters.dettimelimit.set(50000.0)
+                model.parameters.dettimelimit.set(20000000.0)
                 print("Starting to solve model with callbacks")
                 model.solve()
                 end=model.get_time()
@@ -154,7 +155,7 @@ for timeVar in range(30,31,10):
             else:
                 start=modelFull.get_time()
                 modelFull.parameters.mip.tolerances.mipgap.set(0.01)
-                #modelFull.parameters.dettimelimit.set(2000000.0)
+                modelFull.parameters.dettimelimit.set(20000000.0)
                 print("Starting to solve full model without callbacks")
                 modelFull.solve()
                 end=modelFull.get_time()
@@ -191,10 +192,10 @@ for timeVar in range(30,31,10):
         state2=Amipext*x_k-b_Lext
         print("saving result and duration")
         if full:
-            scipy.io.savemat('stateFullxn%dtn%d.mat' % (xn,tn), dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('stateFullxn%dtn%d_%d.mat' % (xn,tn,scenario), dict([('x_k',x),('duration',duration)]))
             
         else:
-            scipy.io.savemat('statexn%dtn%d.mat' % (xn,tn),  dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('statexn%dtn%d_%d.mat' % (xn,tn,scenario),  dict([('x_k',x),('duration',duration)]))
             #scipy.io.savemat('state2.mat', dict(x_k=x2))
             #for i in range(numrows):
         #    print("Row %d:  Slack = %10f" % (i, slack[i]))
