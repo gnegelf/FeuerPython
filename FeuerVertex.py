@@ -71,7 +71,7 @@ class StateconstraintCallback(LazyConstraintCallback):
                 #print("Adding cut: %d" % (storeIdx))
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
- 
+
 for timeVar in range(30,31,10):
     for countVar in range(10,11,5):
         matlabData=scipy.io.loadmat('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
@@ -108,7 +108,7 @@ for timeVar in range(30,31,10):
             modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
             if order:
                 model.order.set([(names[i-1],int(tn+1)-int((i-contVarN)*tn/intVarN),model.order.branch_direction.up)])
-        print("finished adding integer variables")
+        print("Finished adding integer variables")
         Aredcoo=Amipred.tocoo()
         Acoo=Amip.tocoo()
         Aextcoo=Amipext.tocoo()
