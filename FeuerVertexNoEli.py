@@ -13,7 +13,7 @@ from cplex.exceptions import CplexError
 from cplex.callbacks import LazyConstraintCallback
 from cplex.callbacks import BranchCallback
 
-matlabData=scipy.io.loadmat('feuerDataNoElimination%d_%d.mat' % (12,30))
+matlabData=scipy.io.loadmat('feuerDataNoElimination%d_%d_%d.mat' % (10,30,2))
 Amip=scipy.sparse.lil_matrix(matlabData['A'])
 b_L=matlabData['b_L']
 b_U=matlabData['b_U']
@@ -81,7 +81,7 @@ slack = model.solution.get_linear_slacks()
 x = model.solution.get_values()
 x_k=np.transpose(np.array([x]))
 
-scipy.io.savemat('stateNoElixn%dtn%d.mat' % (xn,tn),  dict([('x_k',x),('duration',duration)]))
+scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/FeuerprojektstateNoElixn%dtn%d.mat' % (xn,tn),  dict([('x_k',x),('duration',duration)]))
 
 
  

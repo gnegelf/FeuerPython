@@ -21,8 +21,8 @@ class TemperatureEstimateCallback(BranchCallback):
         #print(self.get_branch(0))
         Branch=self.get_branch(0)
         varName=(Branch[1][0][0])
-        print(varName)
-        print(Branch)
+        #print(varName)
+        #print(Branch)
         """
         if varName is integer:
             if abs(branch[1][0][2]-1)<0.1:
@@ -68,12 +68,12 @@ class StateconstraintCallback(LazyConstraintCallback):
                         thecoefs.append(Amipext[minIdx,j])
                 #print("Adding constraint with min Idx %i",minIdx)
                 #print(thevars)
-                print("Adding cut: %d" % (storeIdx))
+                #print("Adding cut: %d" % (storeIdx))
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
  
-for timeVar in range(30,31,10):
-    for countVar in range(45,46,5):
+for timeVar in range(60,61,10):
+    for countVar in range(25,26,5):
         matlabData=scipy.io.loadmat('feuerData%d_%d.mat' % (countVar,timeVar))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
@@ -93,7 +93,6 @@ for timeVar in range(30,31,10):
         Acol=Amipred.shape[1]
         #define reduced ones
         names=['']*Acol
-
         full = 0
         order = 0
         modelFull=cplex.Cplex()
@@ -143,18 +142,24 @@ for timeVar in range(30,31,10):
         try:
             if not full:
                 start=model.get_time()
-                
-                model.parameters.mip.tolerances.mipgap.set(0.01)
-                #model.parameters.dettimelimit.set(50000.0)
+                model.parameters.mip.tolerances.mipgap.set(0.00001)
+                model.parameters.timelimit.set(5000.0)
+                model.parameters.mip.display.set(2)
                 print("Starting to solve model with callbacks")
+                model.set_warning_stream('feuerWarning%d_%d' % (countVar,timeVar))
+                #model.set_log_stream('feuerLogfile%d_%d.log' % (countVar,timeVar))
+                model.set_results_stream('feuerResult%d_%d' % (countVar,timeVar))
                 model.solve()
+                print(model.solution.MIP.get_mip_relative_gap())
+                #model.set_log_stream('feuerLogfile%d_%d.log' % (countVar,timeVar))
                 end=model.get_time()
                 duration=end-start
                 #model2.solve()
             else:
                 start=modelFull.get_time()
-                modelFull.parameters.mip.tolerances.mipgap.set(0.01)
-                #modelFull.parameters.dettimelimit.set(2000000.0)
+                modelFull.parameters.mip.tolerances.mipgap.set(0.00001)
+                model.set_log_stream('feuerFullLogfile%d_%d.log' % (countVar,timeVar))
+                #modelFull.parameters.timelimit.set(20000.0)
                 print("Starting to solve full model without callbacks")
                 modelFull.solve()
                 end=modelFull.get_time()
