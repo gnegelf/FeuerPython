@@ -21,8 +21,8 @@ class TemperatureEstimateCallback(BranchCallback):
         #print(self.get_branch(0))
         Branch=self.get_branch(0)
         varName=(Branch[1][0][0])
-        print(varName)
-        print(Branch)
+        #print(varName)
+        #print(Branch)
         """
         if varName is integer:
             if abs(branch[1][0][2]-1)<0.1:
@@ -68,14 +68,13 @@ class StateconstraintCallback(LazyConstraintCallback):
                         thecoefs.append(Amipext[minIdx,j])
                 #print("Adding constraint with min Idx %i",minIdx)
                 #print(thevars)
-                print("Adding cut: %d" % (storeIdx))
+                #print("Adding cut: %d" % (storeIdx))
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
- 
-scenario=2;
-for countVar in range(30,46,5):
-    for timeVar in range(30,61,10):
-        matlabData=scipy.io.loadmat('feuerData%d_%d_%d.mat' % (countVar,timeVar,scenario))
+
+for timeVar in range(30,31,10):
+    for countVar in range(10,11,5):
+        matlabData=scipy.io.loadmat('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
         b_Ured=matlabData['b_U2']
@@ -94,7 +93,6 @@ for countVar in range(30,46,5):
         Acol=Amipred.shape[1]
         #define reduced ones
         names=['']*Acol
-
         full = 0
         order = 0
         modelFull=cplex.Cplex()
@@ -141,21 +139,28 @@ for countVar in range(30,46,5):
             #branch_cb = model.register_callback(TemperatureEstimateCallback)
             lazy_cb.number_of_calls = 0
         print("Finished adding constraints")
+        print(cplex.get_version())
         try:
             if not full:
                 start=model.get_time()
-                
-                model.parameters.mip.tolerances.mipgap.set(0.01)
-                model.parameters.dettimelimit.set(20000000.0)
+                model.parameters.mip.tolerances.mipgap.set(0.00001)
+                model.parameters.timelimit.set(5000.0)
+                model.parameters.mip.display.set(2)
                 print("Starting to solve model with callbacks")
+                model.set_warning_stream('feuerWarning%d_%d' % (countVar,timeVar))
+                #model.set_log_stream('feuerLogfile%d_%d.log' % (countVar,timeVar))
+                model.set_results_stream('feuerResult%d_%d' % (countVar,timeVar))
                 model.solve()
+                print(model.solution.MIP.get_mip_relative_gap())
+                #model.set_log_stream('feuerLogfile%d_%d.log' % (countVar,timeVar))
                 end=model.get_time()
                 duration=end-start
                 #model2.solve()
             else:
                 start=modelFull.get_time()
-                modelFull.parameters.mip.tolerances.mipgap.set(0.01)
-                modelFull.parameters.dettimelimit.set(20000000.0)
+                modelFull.parameters.mip.tolerances.mipgap.set(0.00001)
+                model.set_log_stream('feuerFullLogfile%d_%d.log' % (countVar,timeVar))
+                #modelFull.parameters.timelimit.set(20000.0)
                 print("Starting to solve full model without callbacks")
                 modelFull.solve()
                 end=modelFull.get_time()
@@ -192,10 +197,10 @@ for countVar in range(30,46,5):
         state2=Amipext*x_k-b_Lext
         print("saving result and duration")
         if full:
-            scipy.io.savemat('stateFullxn%dtn%d_%d.mat' % (xn,tn,scenario), dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration)]))
             
         else:
-            scipy.io.savemat('statexn%dtn%d_%d.mat' % (xn,tn,scenario),  dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration)]))
             #scipy.io.savemat('state2.mat', dict(x_k=x2))
             #for i in range(numrows):
         #    print("Row %d:  Slack = %10f" % (i, slack[i]))
