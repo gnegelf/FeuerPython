@@ -72,9 +72,9 @@ class StateconstraintCallback(LazyConstraintCallback):
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
  
-for timeVar in range(60,61,10):
-    for countVar in range(25,26,5):
-        matlabData=scipy.io.loadmat('feuerData%d_%d.mat' % (countVar,timeVar))
+for timeVar in range(30,31,10):
+    for countVar in range(10,11,5):
+        matlabData=scipy.io.loadmat('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
         b_Ured=matlabData['b_U2']
@@ -139,6 +139,7 @@ for timeVar in range(60,61,10):
             #branch_cb = model.register_callback(TemperatureEstimateCallback)
             lazy_cb.number_of_calls = 0
         print("Finished adding constraints")
+        print(cplex.get_version())
         try:
             if not full:
                 start=model.get_time()
@@ -196,10 +197,10 @@ for timeVar in range(60,61,10):
         state2=Amipext*x_k-b_Lext
         print("saving result and duration")
         if full:
-            scipy.io.savemat('stateFullxn%dtn%d.mat' % (xn,tn), dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration)]))
             
         else:
-            scipy.io.savemat('statexn%dtn%d.mat' % (xn,tn),  dict([('x_k',x),('duration',duration)]))
+            scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration)]))
             #scipy.io.savemat('state2.mat', dict(x_k=x2))
             #for i in range(numrows):
         #    print("Row %d:  Slack = %10f" % (i, slack[i]))
