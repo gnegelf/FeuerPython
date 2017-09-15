@@ -1,4 +1,6 @@
 #Ignoriere alle matlab .mat files
-*.log
+/*.log
 /*.mat
 waldbrand.py~
+feuerResult*
+feuerWarning*
