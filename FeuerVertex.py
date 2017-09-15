@@ -51,8 +51,8 @@ class StateconstraintCallback(LazyConstraintCallback):
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = float(b_Lext[minIdx]))
         print("callbacks: ",self.number_of_calls)
 
-for timeVar in range(30,31,10):
-    for countVar in range(35,36,5):
+for timeVar in range(30,41,10):
+    for countVar in range(10,16,5):
         matlabData=scipy.io.loadmat('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         Amipred=scipy.sparse.lil_matrix(matlabData['A2'])
         b_Lred=matlabData['b_L2']
@@ -72,7 +72,7 @@ for timeVar in range(30,31,10):
         Acol=Amipred.shape[1]
         #define reduced ones
         names=['']*Acol
-        full = 0
+        full = 1
         order = 0
         
         model = cplex.Cplex()
@@ -115,7 +115,7 @@ for timeVar in range(30,31,10):
         try:
             start=model.get_time()
             #model.parameters.mip.tolerances.mipgap.set(0.00001)
-            model.parameters.timelimit.set(5000.0)
+            model.parameters.timelimit.set(5.0)
             model.parameters.mip.display.set(2)
             if not full:
                 print("Starting to solve model with callbacks")
@@ -161,7 +161,7 @@ for timeVar in range(30,31,10):
             if full:
                 scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
             else:
-                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value(),('gap',model.solution.MIP.get_mip_relative_gap()))]))
+                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
 
 
 
