@@ -1,3 +1,4 @@
 #Ignoriere alle matlab .mat files
+*.log
 /*.mat
 waldbrand.py~
