@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -41,6 +41,7 @@ import weakref
 from . import _internal
 from . import callbacks
 from . import exceptions
+from ._internal._aux_functions import deprecated
 from ._internal._matrices import SparsePair, SparseTriple
 from ._internal import _procedural as _proc
 from . import six
@@ -48,6 +49,7 @@ from . import six
 infinity = _internal._constants.CPX_INFBOUND
 
 
+@deprecated("V12.7.1")
 def terminate():
     """Gracefully stops a CPLEX algorithm.
 
@@ -58,8 +60,10 @@ def terminate():
 
     If it is called while no CPLEX algorithm is running, the next
     CPLEX algorithm to run will terminate immediately.
+
+    :deprecated: Since 12.7.1.
     """
-    _proc.set_py_terminator()
+    _proc.set_cpx_terminator()
 
 
 class Stats(object):
@@ -631,36 +635,6 @@ class Cplex(object):
 
     problem_type = _internal.ProblemType()
     """See `_internal.ProblemType()` """
-    variables             = _internal._subinterfaces.VariablesInterface()
-    """See `_internal._subinterfaces.VariablesInterface()` """
-    linear_constraints    = _internal._subinterfaces.LinearConstraintInterface()
-    """See `_internal._subinterfaces.LinearConstraintInterface()` """
-    quadratic_constraints = _internal._subinterfaces.QuadraticConstraintInterface()
-    """See `_internal._subinterfaces.QuadraticConstraintInterface()` """
-    indicator_constraints = _internal._subinterfaces.IndicatorConstraintInterface()
-    """See `_internal._subinterfaces.IndicatorConstraintInterface()` """
-    SOS                   = _internal._subinterfaces.SOSInterface()
-    """See `_internal._subinterfaces.SOSInterface()` """
-    objective             = _internal._subinterfaces.ObjectiveInterface()
-    """See `_internal._subinterfaces.ObjectiveInterface()` """
-    MIP_starts            = _internal._subinterfaces.MIPStartsInterface()
-    """See `_internal._subinterfaces.MIPStartsInterface()` """
-    solution              = _internal._subinterfaces.SolutionInterface()
-    """See `_internal._subinterfaces.SolutionInterface()` """
-    presolve              = _internal._subinterfaces.PresolveInterface()
-    """See `_internal._subinterfaces.PresolveInterface()` """
-    order                 = _internal._subinterfaces.OrderInterface()
-    """See `_internal._subinterfaces.OrderInterface()` """
-    conflict              = _internal._subinterfaces.ConflictInterface()
-    """See `_internal._subinterfaces.ConflictInterface()` """
-    advanced              = _internal._subinterfaces.AdvancedCplexInterface()
-    """See `_internal._subinterfaces.AdvancedCplexInterface()` """
-    start                 = _internal._subinterfaces.InitialInterface()
-    """See `_internal._subinterfaces.InitialInterface()` """
-    feasopt               = _internal._subinterfaces.FeasoptInterface()
-    """See `_internal._subinterfaces.FeasoptInterface()` """
-    parameters            = _internal._parameter_classes.RootParameterGroup(None, None)
-    """See `_internal._parameter_classes.RootParameterGroup` """
 
     def __init__(self, *args):
         """Constructor of the Cplex class.
@@ -713,29 +687,70 @@ class Cplex(object):
                 if len(args) > 1 and isinstance(args[1], six.string_types):
                     filetype = args[1]
                 self._lp = _proc.createprob(
-                    env._e, filename, env.parameters.read.apiencoding.get())
-                _proc.readcopyprob(env._e, self._lp, filename, filetype)
+                    env._e, filename, enc=env._apienc)
+                _proc.readcopyprob(env._e, self._lp, filename, filetype,
+                                   enc=env._apienc)
             else:
                 self._lp = _proc.createprob(
-                    env._e, "", env.parameters.read.apiencoding.get())
+                    env._e, "", enc=env._apienc)
         self._env = env
         self._env_lp_ptr = _proc.pack_env_lp_ptr(self._env._e, self._lp)
+
         self.parameters = env.parameters
+        """See `_internal._parameter_classes.RootParameterGroup` """
         self.parameters._cplex = weakref.proxy(self)
+
         self.variables = _internal._subinterfaces.VariablesInterface()
+        """See `_internal._subinterfaces.VariablesInterface()` """
+
         self.linear_constraints = _internal._subinterfaces.LinearConstraintInterface()
+        """See `_internal._subinterfaces.LinearConstraintInterface()` """
+
         self.quadratic_constraints = _internal._subinterfaces.QuadraticConstraintInterface()
+        """See `_internal._subinterfaces.QuadraticConstraintInterface()` """
+
         self.indicator_constraints = _internal._subinterfaces.IndicatorConstraintInterface()
+        """See `_internal._subinterfaces.IndicatorConstraintInterface()` """
+
         self.SOS = _internal._subinterfaces.SOSInterface()
+        """See `_internal._subinterfaces.SOSInterface()` """
+
         self.objective = _internal._subinterfaces.ObjectiveInterface()
+        """See `_internal._subinterfaces.ObjectiveInterface()` """
+
         self.MIP_starts = _internal._subinterfaces.MIPStartsInterface()
+        """See `_internal._subinterfaces.MIPStartsInterface()` """
+
         self.solution = _internal._subinterfaces.SolutionInterface()
+        """See `_internal._subinterfaces.SolutionInterface()` """
+
         self.presolve = _internal._subinterfaces.PresolveInterface()
+        """See `_internal._subinterfaces.PresolveInterface()` """
+
         self.order = _internal._subinterfaces.OrderInterface()
+        """See `_internal._subinterfaces.OrderInterface()` """
+
         self.conflict = _internal._subinterfaces.ConflictInterface()
+        """See `_internal._subinterfaces.ConflictInterface()` """
+
         self.advanced = _internal._subinterfaces.AdvancedCplexInterface()
+        """See `_internal._subinterfaces.AdvancedCplexInterface()` """
+
         self.start = _internal._subinterfaces.InitialInterface()
+        """See `_internal._subinterfaces.InitialInterface()` """
+
         self.feasopt = _internal._subinterfaces.FeasoptInterface()
+        """See `_internal._subinterfaces.FeasoptInterface()` """
+
+        self.long_annotations = _internal._anno.LongAnnotationInterface()
+        """See `_internal._anno.LongAnnotationInterface()`"""
+
+        self.double_annotations = _internal._anno.DoubleAnnotationInterface()
+        """See `_internal._anno.DoubleAnnotationInterface()`"""
+
+        self.pwl_constraints = _internal._pwl.PWLConstraintInterface()
+        """See `_internal._pwl.PWLConstraintInterface()`"""
+
         self.variables._setup(self)
         self.linear_constraints._setup(self)
         self.quadratic_constraints._setup(self)
@@ -750,6 +765,9 @@ class Cplex(object):
         self.advanced._setup(self)
         self.start._setup(self)
         self.feasopt._setup(self)
+        self.long_annotations._setup(self)
+        self.double_annotations._setup(self)
+        self.pwl_constraints._setup(self)
 
     def end(self):
         """Releases the Cplex object.
@@ -762,13 +780,13 @@ class Cplex(object):
         """
         if self._disposed:
             return
+        self._disposed = True
         # free prob
         if self._env and self._lp:
             _proc.freeprob(self._env._e, self._lp)
         # free env
         if self._env:
             self._env._end()
-        self._disposed = True
 
     def __del__(self):
         """non-public"""
@@ -812,7 +830,8 @@ class Cplex(object):
         >>> out = c.set_log_stream(None)
         >>> c.read("lpex.mps")
         """
-        _proc.readcopyprob(self._env._e, self._lp, filename, filetype)
+        _proc.readcopyprob(self._env._e, self._lp, filename, filetype,
+                           enc=self._env._apienc)
 
     def write(self, filename, filetype = ""):
         """Writes a problem to file.
@@ -846,28 +865,104 @@ class Cplex(object):
         Reference Manual.
         """
         if self._is_special_filetype(filename, filetype, 'dua'):
-            _proc.dualwrite(self._env._e, self._lp, filename)
+            _proc.dualwrite(self._env._e, self._lp, filename,
+                            enc=self._env._apienc)
         elif self._is_special_filetype(filename, filetype, 'emb'):
-            _proc.embwrite(self._env._e, self._lp, filename)
+            _proc.embwrite(self._env._e, self._lp, filename,
+                           enc=self._env._apienc)
         elif self._is_special_filetype(filename, filetype, 'dpe'):
-            epsilon = self.parameters._get(_internal._constants.CPX_PARAM_EPPER)
-            _proc.dperwrite(self._env._e, self._lp, filename, epsilon)
+            epsilon = self.parameters._get(
+                _internal._constants.CPX_PARAM_EPPER)
+            _proc.dperwrite(self._env._e, self._lp, filename, epsilon,
+                            enc=self._env._apienc)
         elif self._is_special_filetype(filename, filetype, 'ppe'):
-            epsilon = self.parameters._get(_internal._constants.CPX_PARAM_EPPER)
-            _proc.pperwrite(self._env._e, self._lp, filename, epsilon)
+            epsilon = self.parameters._get(
+                _internal._constants.CPX_PARAM_EPPER)
+            _proc.pperwrite(self._env._e, self._lp, filename, epsilon,
+                            enc=self._env._apienc)
         else:
-            _proc.writeprob(self._env._e, self._lp, filename, filetype)
+            _proc.writeprob(self._env._e, self._lp, filename, filetype,
+                            enc=self._env._apienc)
 
     def _is_special_filetype(self, filename, filetype, ext):
         if filetype is None or filetype == "":
-            # Protect against filename == None by wrapping it with str() below.
             for extra_ext in ('', '.gz', '.bz2'):
-                if str(filename).endswith('.' + ext + extra_ext):
+                if (isinstance(filename, six.string_types) and
+                    filename.endswith('.' + ext + extra_ext)):
                     return True
         else:
             if filetype == ext:
                 return True
         return False
+
+    def read_annotations(self, filename):
+        """Reads annotations from a file.
+
+        Example usage:
+
+        >>> import cplex
+        >>> c = cplex.Cplex()
+        >>> idx = c.long_annotations.add('ann1', 0)
+        >>> objtype = c.long_annotations.object_type.variable
+        >>> indices = c.variables.add(names=['v1', 'v2', 'v3'])
+        >>> c.long_annotations.set_values(idx, objtype,
+        ...                               [(i, 1) for i in indices])
+        >>> idx = c.double_annotations.add('ann1', 0)
+        >>> objtype = c.double_annotations.object_type.variable
+        >>> indices = c.variables.add(names=['v1', 'v2', 'v3'])
+        >>> c.double_annotations.set_values(idx, objtype,
+        ...                                 [(i, 1) for i in indices])
+        >>> c.write_annotations('example.ann')
+        >>> c.long_annotations.delete()
+        >>> c.double_annotations.delete()
+        >>> c.long_annotations.get_num()
+        0
+        >>> c.double_annotations.get_num()
+        0
+        >>> c.read_annotations('example.ann')
+        >>> c.long_annotations.get_num()
+        1
+        >>> c.double_annotations.get_num()
+        1
+        """
+        _proc.readcopyanno(self._env._e, self._lp, filename,
+                           enc=self._env._apienc)
+
+    def write_annotations(self, filename):
+        """Writes the annotations to a file.
+
+        Example usage:
+
+        >>> import cplex
+        >>> c = cplex.Cplex()
+        >>> idx = c.long_annotations.add('ann1', 0)
+        >>> objtype = c.long_annotations.object_type.variable
+        >>> indices = c.variables.add(names=['v1', 'v2', 'v3'])
+        >>> c.long_annotations.set_values(idx, objtype,
+        ...                               [(i, 1) for i in indices])
+        >>> c.write_annotations('example.ann')
+        """
+        _proc.writeanno(self._env._e, self._lp, filename,
+                        enc=self._env._apienc)
+
+    def write_benders_annotation(self, filename):
+        """Writes the annotation of the auto-generated decomposition.
+
+        Writes the annotation of the decompostion CPLEX automatically
+        generates for the model of the CPLEX problem object to the
+        specified file.
+
+        Example usage:
+
+        >>> import cplex
+        >>> c = cplex.Cplex()
+        >>> out = c.set_results_stream(None)
+        >>> out = c.set_log_stream(None)
+        >>> c.read('UFL_25_35_1.mps')
+        >>> c.write_benders_annotation('UFL_25_35_1.ann')
+        """
+        _proc.writebendersanno(self._env._e, self._lp, filename,
+                               enc=self._env._apienc)
 
     def get_problem_type(self):
         """Returns the problem type.
@@ -918,10 +1013,10 @@ class Cplex(object):
 
         The content of the string passed to this function must conform to the
         VMC file specification.
-        If the string can be succesfully parsed then the virtual machine
+        If the string can be successfully parsed, then the virtual machine
         configuration specified by it is installed in this instance.
-        In case of error a previously installed virtual machine configuration
-        it not touched.
+        In case of error, a previously installed virtual machine configuration
+        is not touched.
         """
         _proc.copyvmconfig(self._env._e, xmlstring)
 
@@ -930,12 +1025,13 @@ class Cplex(object):
 
         The filename argument to this function must specify a file that
         conforms to the VMC file format.
-        If the file can be succesfully parsed then the virtual machine
+        If the file can be successfully parsed, then the virtual machine
         configuration specified by it is installed in this instance.
-        In case of error a previously installed virtual machine configuration
-        it not touched.
+        In case of error, a previously installed virtual machine configuration
+        is not touched.
         """
-        _proc.readcopyvmconfig(self._env._e, filename)
+        _proc.readcopyvmconfig(self._env._e, filename,
+                               enc=self._env._apienc)
 
     def del_vmconfig(self):
         """Delete the virtual machine configuration in this instance (if there is any)."""
@@ -982,8 +1078,10 @@ class Cplex(object):
                 _proc.mipopt(self._env._e, self._lp)
         elif self.quadratic_constraints.get_num() > 0:
             lpmethod = self.parameters.lpmethod.get()
-            if lpmethod == _internal._constants.CPX_ALG_BARRIER or lpmethod == _internal._constants.CPX_ALG_AUTOMATIC:
-                _proc.hybbaropt(self._env._e, self._lp, _internal._constants.CPX_ALG_NONE)
+            if (lpmethod == _internal._constants.CPX_ALG_BARRIER or
+                lpmethod == _internal._constants.CPX_ALG_AUTOMATIC):
+                _proc.hybbaropt(self._env._e, self._lp,
+                                _internal._constants.CPX_ALG_NONE)
             else:
                 _proc.qpopt(self._env._e, self._lp)
         elif not self.objective.get_num_quadratic_nonzeros() > 0:
@@ -993,7 +1091,7 @@ class Cplex(object):
                 if exc.args[2] == _internal._pycplex.CPXERR_NOT_FOR_MIP:
                     _proc.mipopt(self._env._e, self._lp)
                 else:
-                    raise exc
+                    raise
         else:
             _proc.qpopt(self._env._e, self._lp)
 
@@ -1019,11 +1117,13 @@ class Cplex(object):
 
     def get_problem_name(self):
         """Returns the problem name."""
-        return _proc.getprobname(self._env._e, self._lp, self.parameters.read.apiencoding.get())
+        return _proc.getprobname(self._env._e, self._lp,
+                                 enc=self._env._apienc)
 
     def set_problem_name(self, name):
         """Sets the problem name."""
-        _proc.chgprobname(self._env._e, self._lp, name, self.parameters.read.apiencoding.get())
+        _proc.chgprobname(self._env._e, self._lp, name,
+                          enc=self._env._apienc)
 
     def cleanup(self, epsilon):
         """Deletes values from the problem data with absolute value smaller than epsilon."""

@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -15,7 +15,7 @@
 import weakref
 
 from ._procedural import check_status
-from ..exceptions import CplexError
+from ..exceptions import CplexError, ErrorChannelMessage
 from .. import six
 
 class OutputStream(object):
@@ -73,6 +73,7 @@ class OutputStream(object):
         """
         if self._disposed:
             return
+        self._disposed = True
         # File-like objects should implement this attribute.  If we come
         # across one that doesn't, don't assume anything.
         try:
@@ -85,45 +86,65 @@ class OutputStream(object):
             # If we opened the file, then we need to close it.
             if self._was_opened:
                 self._file.close()
-        self._disposed = True
 
     def __del__(self):
         """OutputStream destructor."""
         self._end()
 
     def _write_wrap(self, str_):
-        """Only used by callbacks (see SWIG_callback.c)."""
+        """Used when anything is written to the message channels.
+
+        The _error_string attribute should only be present on the error
+        channel.  If we detect that something was printed on the error
+        channel, then we raise an ErrorChannelMessage along with this
+        message.  The message can contain more information than what
+        we'd get by calling CPXgeterrorstring.  For example, we may see
+        format string specifiers rather having them filled in.
+
+        See SWIG_callback.c:messagewrap.
+        """
         try:
             self._terminate = 0
             self.write(str_)
             self.flush()
+            # Check to see if something was written to the error
+            # channel.
             try:
-                msg = self._error_string
+                # Remove trailing newlines.
+                msg = self._error_string.strip()
             except AttributeError:
                 msg = None
             if msg is not None:
+                # Errors raised from callbacks are handled in
+                # SWIG_callback.c:cpx_handle_pyerr.  If we do not have a
+                # callback error (CPXERR_CALLBACK = 1006), then raise a
+                # ErrorChannelMessage containing the last error string.
+                # This gets special treatment in
+                # _procedural.py:StatusChecker.
                 if not msg.startswith("CPLEX Error  1006"):
                     self._error_string = None
-                    raise CplexError("ERROR", msg)
+                    # NB: This will be caught immediately below and stored
+                    #     in self._env._callback_exception.
+                    raise ErrorChannelMessage(msg)
         except Exception as exc:
             self._env._callback_exception = exc
             check_status._pyenv = self._env
             self._terminate = 1
 
-    def write(self, str_):
+    def write(self, msg):
         """Parses and writes a string.
 
-        If self._fn is not None, self._fn(str_) is passed to
-        self._file.write.  Otherwise, str_ is passed to self._file.write
+        If self._fn is not None, self._fn(msg) is passed to
+        self._file.write.  Otherwise, msg is passed to self._file.write.
         """
         if self._file is None:
             return
-        if str_ is None:
-            str_ = ""
+        if msg is None:
+            msg = ""
         if self._fn is None:
-            self._file.write(str_)
+            self._file.write(msg)
         else:
-            self._file.write(self._fn(str_))
+            self._file.write(self._fn(msg))
 
     def flush(self):
         """Flushes the buffer."""

@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -13,23 +13,67 @@
 
 
 """
-
+import functools
+import inspect
+import warnings
 
 from ..exceptions import CplexError, WrongNumberOfArgumentsError
 from .. import six
-from ..six.moves import map
-from ..six.moves import zip
+from ..six.moves import (map, zip, range)
 
 
-def validate_arg_lengths(arg_list):
+class deprecated(object):
+    """A decorator that marks methods/functions as deprecated."""
+
+    def __init__(self, version):
+        self.version = version
+
+    def __call__(self, cls_or_func):
+        if (inspect.isfunction(cls_or_func) or
+            inspect.ismethod(cls_or_func)):
+            fmt = "{0} function or method"
+        # NOTE: Doesn't work for classes .. haven't figured that out yet.
+        #       Specifically, when a decorated class is used as a base
+        #       class.
+        # elif inspect.isclass(cls_or_func):
+        #     fmt = "{0} class"
+        else:
+            raise TypeError(type(cls_or_func))
+        msg = _getdeprecatedmsg(fmt.format(cls_or_func.__name__),
+                                self.version)
+        @functools.wraps(cls_or_func)
+        def wrapped(*args, **kwargs):
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+            return cls_or_func(*args, **kwargs)
+        return wrapped
+
+def deprecated_class(name, version, stacklevel=3):
+    """Emits a warning for a deprecated class.
+
+    This should be called in __init__.
+
+    name - the name of the class (e.g., PresolveCallback).
+
+    version - the version at which the class was deprecated (e.g.,
+              "V12.7.1").
+
+    stacklevel - indicates how many levels up the stack is the caller.
+    """
+    msg = _getdeprecatedmsg("{0} class".format(name), version)
+    warnings.warn(msg, DeprecationWarning, stacklevel=stacklevel)
+
+def _getdeprecatedmsg(item, version):
+    return "the {0} is deprecated since {1}".format(item, version)
+
+def validate_arg_lengths(arg_list, allow_empty=True):
     """non-public"""
     arg_lengths = [len(x) for x in arg_list]
     max_length = max(arg_lengths)
     for arg_length in arg_lengths:
-        if arg_length != 0 and arg_length != max_length:
+        if ((not allow_empty or arg_length != 0) and
+            arg_length != max_length):
             raise CplexError("Inconsistent arguments")
     return max_length
-
 
 def make_ranges(indices):
     """non-public"""
@@ -43,9 +87,8 @@ def make_ranges(indices):
         i = j + 1
         j = i
     return ranges
-    
 
-def apply_freeform_two_args(caller, fn, convert, args):
+def apply_freeform_two_args(fn, convert, args):
     """non-public"""
     def con(a):
         if isinstance(a, six.string_types):
@@ -53,30 +96,29 @@ def apply_freeform_two_args(caller, fn, convert, args):
         else:
             return a
     if len(args) == 2:
-        if (isinstance(con(args[0]), six.integer_types) and
-            isinstance(con(args[1]), six.integer_types)):
-            return fn(con(args[0]), con(args[1]))
+        conarg0, conarg1 = (con(args[0]), con(args[1]))
+        if (isinstance(conarg0, six.integer_types) and
+            isinstance(conarg1, six.integer_types)):
+            return fn(conarg0, conarg1)
         else:
-            raise CplexError(
-                "apply_freeform_two_args: Wrong argument type to " + caller)
+            raise TypeError("expecting names or indices")
     elif len(args) == 1:
         if isinstance(args[0], (list, tuple)):
             retval = []
             for member in map(fn, *zip(*make_ranges(list(map(con, args[0]))))):
                 retval.extend(member)
             return retval
-        if isinstance(con(args[0]), six.integer_types):
-            return fn(con(args[0]), con(args[0]))[0]
+        conarg0 = con(args[0])
+        if isinstance(conarg0, six.integer_types):
+            return fn(conarg0, conarg0)[0]
         else:
-            raise CplexError(
-                "apply_freeform_two_args: Wrong argument type to " + caller)
+            raise TypeError("expecting name or index")
     elif len(args) == 0:
         return fn(0)
     else:
         raise WrongNumberOfArgumentsError()
 
-
-def apply_freeform_one_arg(caller, fn, convert, maxval, args):
+def apply_freeform_one_arg(fn, convert, maxval, args):
     """non-public"""
     def con(a):
         if isinstance(a, six.string_types):
@@ -84,28 +126,27 @@ def apply_freeform_one_arg(caller, fn, convert, maxval, args):
         else:
             return a
     if len(args) == 2:
-        if (isinstance(con(args[0]), six.integer_types) and
-            isinstance(con(args[1]), six.integer_types)):
-            return [fn(x) for x in range(con(args[0]), con(args[1]) + 1)]
+        conarg0, conarg1 = (con(args[0]), con(args[1]))
+        if (isinstance(conarg0, six.integer_types) and
+            isinstance(conarg1, six.integer_types)):
+            return [fn(x) for x in range(conarg0, conarg1 + 1)]
         else:
-            raise CplexError(
-                "apply_freeform_one_arg: Wrong argument type to " + caller)
+            raise TypeError("expecting names or indices")
     elif len(args) == 1:
         if isinstance(args[0], (list, tuple)):
             return [fn(x) for x in map(con, args[0])]
-        elif isinstance(con(args[0]), six.integer_types):
-            return fn(con(args[0]))
+        conarg0 = con(args[0])
+        if isinstance(conarg0, six.integer_types):
+            return fn(conarg0)
         else:
-            raise CplexError(
-                "apply_freeform_one_arg: Wrong argument type to " + caller)
+            raise TypeError("expecting name or index")
     elif len(args) == 0:
-        return apply_freeform_one_arg(caller, fn, convert, 0,
+        return apply_freeform_one_arg(fn, convert, 0,
                                       (list(range(maxval)),))
     else:
         raise WrongNumberOfArgumentsError()
 
-
-def apply_pairs(caller, fn, convert, *args):
+def apply_pairs(fn, convert, *args):
     """non-public"""
     def con(a):
         if isinstance(a, six.string_types):
@@ -118,24 +159,25 @@ def apply_pairs(caller, fn, convert, *args):
         a1, a2 = zip(*args[0])
         fn(list(map(con, a1)), list(a2))
 
-
-def delete_set(caller, fn, convert, max_num, *args):
+def delete_set_by_range(fn, convert, max_num, *args):
     """non-public"""
     if len(args) == 0:
-        for i in range(max_num):
-            fn(0)
+        # Delete All:
+        if max_num > 0:
+            fn(0, max_num-1)
     elif len(args) == 1:
+        # Delete all items from a possibly unordered list of mixed types:
         if isinstance(convert(args[0]), six.integer_types):
-            fn(convert(args[0]))
+            args = [convert(args[0])]
         else:
-            args = list(map(convert, args[0]))
-            args.sort()
-            for i, a in enumerate(args):
-                fn(convert(a) - i)
+            args = [convert(i) for i in args[0]]
+        for i in sorted(args, reverse=True):
+            fn(i, i)
     elif len(args) == 2:
-        delete_set(caller, fn, convert, max_num,
-                   list(range(convert(args[0]), convert(args[1]) + 1)))
-
+        # Delete range from arg[0] to arg[1]:
+        fn(convert(args[0]), convert(args[1]))
+    else:
+        raise WrongNumberOfArgumentsError()
 
 class _group:
     """Object to contain constraint groups"""
@@ -154,7 +196,7 @@ class _group:
         self._gp = gp
 
         
-def make_group(caller, conv, max_num, c_type, *args):
+def make_group(conv, max_num, c_type, *args):
     """Returns a _group object
 
     input:

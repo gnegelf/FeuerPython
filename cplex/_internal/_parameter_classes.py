@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -66,7 +66,7 @@ class Parameter(object):
                 return self._apiencoding_value
         if self._id == _constants.CPX_PARAM_FILEENCODING:
             return CPX_PROC.cpx_encode(self._env.parameters._get(self._id),
-                                       self._env.parameters.read.apiencoding.get())
+                                       self._env._apienc)
         return self._env.parameters._get(self._id)
 
     def reset(self):
@@ -84,7 +84,7 @@ class Parameter(object):
     def default(self):
         """Returns the default value of the parameter."""
         if self._id == _constants.CPX_PARAM_DATACHECK:
-            return 1
+            return _constants.CPX_DATACHECK_WARN
         elif self._id == _constants.CPX_PARAM_APIENCODING:
             return CPX_PROC.default_encoding
         else:
@@ -205,7 +205,7 @@ class ParameterGroup(object):
 class TuningConstants:
     """Status codes returned by tuning methods.
 
-    For an exaplanation of tuning, see that topic in
+    For an explanation of tuning, see that topic in
     the CPLEX User's Manual.
     """
 
@@ -255,7 +255,7 @@ class RootParameterGroup(ParameterGroup):
         # retain these values no matter what (except for datacheck, which can
         # be turned off if the user desires).
         return {_constants.CPX_PARAM_APIENCODING : CPX_PROC.default_encoding,
-                _constants.CPX_PARAM_DATACHECK : 1,
+                _constants.CPX_PARAM_DATACHECK : _constants.CPX_DATACHECK_WARN,
                 # turn off access to presolved problem in callbacks
                 _constants.CPX_PARAM_MIPCBREDLP : 0}
 
@@ -269,7 +269,7 @@ class RootParameterGroup(ParameterGroup):
             expected = overrides[key]
             assert (actual == expected), "Unexpected value for overridden parameter!"
         # Make sure that the Parameter._apiencoding_value has been overridden too.
-        assert (self.read.apiencoding.get() == CPX_PROC.default_encoding), \
+        assert (self._env._apienc == CPX_PROC.default_encoding), \
             "Expecting value for read.apiencoding to have been overridden!"
 
     def _override_defaults(self):
@@ -451,11 +451,13 @@ class RootParameterGroup(ParameterGroup):
     
     def read_file(self, filename):
         """Reads a set of parameters from the file filename."""
-        CPX_PROC.readcopyparam(self._env._e, filename)
+        CPX_PROC.readcopyparam(self._env._e, filename,
+                               enc=self._env._apienc)
 
     def write_file(self, filename):
         """Writes a set of parameters to the file filename."""
-        CPX_PROC.writeparam(self._env._e, filename)
+        CPX_PROC.writeparam(self._env._e, filename,
+                            enc=self._env._apienc)
 
 
 class off_on_constants:
@@ -632,9 +634,9 @@ class subalg_constants:
     auto       = _constants.CPX_ALG_AUTOMATIC
     primal     = _constants.CPX_ALG_PRIMAL
     dual       = _constants.CPX_ALG_DUAL
+    network    = _constants.CPX_ALG_NET
     barrier    = _constants.CPX_ALG_BARRIER
     sifting    = _constants.CPX_ALG_SIFTING
-    network    = _constants.CPX_ALG_NET
     def __getitem__(self, item):
         """Converts a constant to a string.
 
@@ -653,12 +655,12 @@ class subalg_constants:
             return 'primal'
         if item == _constants.CPX_ALG_DUAL:
             return 'dual'
+        if item == _constants.CPX_ALG_NET:
+            return 'network'
         if item == _constants.CPX_ALG_BARRIER:
             return 'barrier'
         if item == _constants.CPX_ALG_SIFTING:
             return 'sifting'
-        if item == _constants.CPX_ALG_NET:
-            return 'network'
 
 class nodesel_constants:
     depth_first       = _constants.CPX_NODESEL_DFS
@@ -1679,21 +1681,6 @@ class solutiontype_constants:
         if item == 2:
             return 'non_basic'
 
-class solutiontarget_constants:
-    auto           = 0
-    optimal_convex = 1
-    first_order    = 2
-    optimal_global = 3
-    def __getitem__(self, item):
-        if item == 0:
-            return 'auto'
-        if item == 1:
-            return 'optimal_convex'
-        if item == 2:
-            return 'first_order'
-        if item == 3:
-            return 'optimal_global'
-
 class optimalitytarget_constants:
     auto           = 0
     optimal_convex = 1
@@ -1735,3 +1722,55 @@ class rampup_duration_constants:
             return 'dynamic'
         if item == _constants.CPX_RAMPUP_INFINITE:
             return 'infinite'
+
+class datacheck_constants:
+    off = _constants.CPX_DATACHECK_OFF
+    warn = _constants.CPX_DATACHECK_WARN
+    assist = _constants.CPX_DATACHECK_ASSIST
+    def __getitem__(self, item):
+        """Converts a constant to a string.
+
+        Example usage:
+
+        >>> import cplex
+        >>> c = cplex.Cplex()
+        >>> c.parameters.read.datacheck.values.warn
+        1
+        >>> c.parameters.read.datacheck.values[1]
+        'warn'
+        """
+        if item == _constants.CPX_DATACHECK_OFF:
+            return 'off'
+        if item == _constants.CPX_DATACHECK_WARN:
+            return 'warn'
+        if item == _constants.CPX_DATACHECK_ASSIST:
+            return 'assist'
+
+class benders_strategy_constants:
+    none = _constants.CPX_BENDERSSTRATEGY_OFF
+    auto = _constants.CPX_BENDERSSTRATEGY_AUTO
+    user = _constants.CPX_BENDERSSTRATEGY_USER
+    workers = _constants.CPX_BENDERSSTRATEGY_WORKERS
+    full = _constants.CPX_BENDERSSTRATEGY_FULL
+    def __getitem__(self, item):
+        """Converts a constant to a string.
+
+        Example usage:
+
+        >>> import cplex
+        >>> c = cplex.Cplex()
+        >>> c.parameters.benders.strategy.values.auto
+        0
+        >>> c.parameters.benders.strategy.values[0]
+        'auto'
+        """
+        if item == _constants.CPX_BENDERSSTRATEGY_OFF:
+            return 'off'
+        if item == _constants.CPX_BENDERSSTRATEGY_AUTO:
+            return 'auto'
+        if item == _constants.CPX_BENDERSSTRATEGY_USER:
+            return 'user'
+        if item == _constants.CPX_BENDERSSTRATEGY_WORKERS:
+            return 'workers'
+        if item == _constants.CPX_BENDERSSTRATEGY_FULL:
+            return 'full'

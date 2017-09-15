@@ -1,25 +1,22 @@
-# --------------------------------------------------------------------------
-# File: _matrices.py 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# File: _matrices.py
+# -----------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
 # IBM Corp.
-# ------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 """
-
-
 """
 
 from ..exceptions import CplexError
-from . import _procedural
 from .. import six
 
-class SparsePair(object):
 
+class SparsePair(object):
     """A class for storing sparse vector data.
 
     An instance of this class has two attributes, ind and val.  ind
@@ -28,19 +25,23 @@ class SparsePair(object):
     any identifier; for example, when a SparsePair object is passed to
     Cplex.linear_constraints.add, its ind attribute may be a list
     containing both variable names and variable indices.
-    
     """
-    
-    def __init__(self, ind = [], val = []):
+
+    def __init__(self, ind=None, val=None):
         """Constructor for SparsePair.
 
         Takes two arguments, ind and val; ind specifies the indices that
         the SparsePair refers to, and val specifies the float values 
         associated with those indices; ind and val must have the same
-        length.
+        length.  If ind or val is omitted, they will default to an empty
+        list.
 
         >>> spair = SparsePair(ind=[0], val=[1.0])
         """
+        if ind is None:
+            ind = []
+        if val is None:
+            val = []
         self.ind = ind
         self.val = val
         if not self.isvalid():
@@ -80,35 +81,6 @@ class SparsePair(object):
         """
         return self.ind, self.val
 
-
-class _C_HBMatrix(object):
-
-    """non-public
-
-
-    """
-
-    def __init__(self, lolmat, env_lp, r_c, enc):
-        """non-public"""
-        self._mat = _procedural.Pylolmat_to_CHBmat(lolmat, env_lp, r_c, enc)
-        if self._mat is None:
-            raise MemoryError
-        elif len(self._mat) == 2:
-            raise CplexError(" %d: Invalid name -- '%s'\n" % tuple(self._mat))
-        elif len(self._mat) == 1:
-            raise TypeError(" invalid matrix input type -- ", self._mat[0])
-        
-    def __del__(self):
-        """non-public"""
-        if hasattr(self, "_mat") and self._mat is not None:
-            if len(self._mat) == 4:
-                _procedural.free_CHBmat(self._mat)
-    
-    def _get_nnz(self):
-        """non-public"""
-        return self._mat[3]
-
-
 class _HBMatrix(object):
     """non-public
 
@@ -132,7 +104,7 @@ class _HBMatrix(object):
                 self.matbeg.append(len(self.matind))
                 self.matind.extend(v0)
                 self.matval.extend(v1)
-            
+
     def __len__(self):
         """non-public"""
         return len(self.matbeg)
@@ -166,32 +138,37 @@ class _HBMatrix(object):
 
 
 class SparseTriple(object):
-
     """A class for storing sparse matrix data.
 
-    An instance of this class has three attributes, ind1, ind2, and
-    val.  ind1 and ind2 specify the indices and val specifies the
-    values.  ind1, ind2, and val must be sequences of the same length.
-    In general, ind1 and ind2 may contain any identifier; for example, when a
-    SparseTriple object is passed to Cplex.quadratic_constraints.add,
-    its ind1 attribute may be a list containing both variable names
-    and variable indices.
-
+    An instance of this class has three attributes, ind1, ind2, and val.
+    ind1 and ind2 specify the indices and val specifies the values.
+    ind1, ind2, and val must be sequences of the same length.  In
+    general, ind1 and ind2 may contain any identifier; for example, when
+    a SparseTriple object is passed to Cplex.quadratic_constraints.add,
+    its ind1 attribute may be a list containing both variable names and
+    variable indices.
     """
 
-    def __init__(self, ind1 = [], ind2 = [], val = []):
+    def __init__(self, ind1=None, ind2=None, val=None):
         """Constructor for SparseTriple.
 
         Takes three arguments, ind1, ind2 and val, specifying the
         indices that the SparseTriple refers to and the float values
         associated with those indices, respectively.  ind1, ind2, and
-        val must all have the same length.
+        val must all have the same length.  If ind1, ind2, or val is
+        omitted, they will default to an empty list.
 
         >>> striple = SparseTriple(ind1=[0], ind2=[0], val=[1.0])
         """
+        if ind1 is None:
+            ind1 = []
+        if ind2 is None:
+            ind2 = []
+        if val is None:
+            val = []
         self.ind1 = ind1
         self.ind2 = ind2
-        self.val  = val
+        self.val = val
         if not self.isvalid():
             raise CplexError("Inconsistent input data to SparseTriple")
 

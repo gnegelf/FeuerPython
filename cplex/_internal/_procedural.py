@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -12,17 +12,18 @@
 
 from __future__ import print_function
 
+from contextlib import contextmanager
+from random import randrange
+import signal
+
+from . import _list_array_utils as LAU
 from . import _pycplex as CR
 
 from ._constants import *
+from ..exceptions import CplexSolverError, CplexError, ErrorChannelMessage
 
-from . import _list_array_utils as LAU
-from ..exceptions import CplexSolverError, CplexError
-
-from random import randrange
 from .. import six
-from ..six.moves import map
-from ..six.moves import zip
+from ..six.moves import map, zip
 
 default_encoding     = "UTF-8"
 cpx_default_encoding = "UTF-8"
@@ -53,7 +54,7 @@ def _cpx_encode_py2(my_str, enc):
         return six.text_type(my_str, cpx_default_encoding).encode(enc)
 
 def _cpx_encode_py3(my_str, enc):
-    assert six.PY3
+    assert not six.PY2
     if isinstance(my_str, six.binary_type):
         return my_str.decode(enc)
     else:
@@ -96,6 +97,29 @@ def _safeIntArray(arraylen):
         arraylen = 1
     return CR.intArray(arraylen)
 
+def _safeLongArray(arraylen):
+    # See comment for _safeDoubleArray above.
+    if arraylen <= 0:
+        arraylen = 1
+    return CR.longArray(arraylen)
+
+def _rangelen(begin, end):
+    """Returns length of the range specified by begin and end.
+
+    As this is typically used to calculate the length of a buffer, it
+    always returns a result >= 0.
+
+    See functions like `_safeDoubleArray` and `safeLongArray`.
+    """
+    # We allow arguments like begin=0, end=-1 on purpose.  This
+    # represents an empty set.  In most cases, the callable library will
+    # just do nothing when called with an empty set.  Unfortunately, this
+    # isn't consistent across the entire API.  See RTC-31484 for more.
+    result = end - begin + 1
+    if result < 0:
+        return 0
+    return result
+
 def getstatstring(env, statind, enc=default_encoding):
     output = []
     CR.CPXXgetstatstring(env, statind, output)
@@ -109,17 +133,63 @@ def geterrorstring(env, errcode):
 def cb_geterrorstring(env, status):
     return CR.cb_geterrorstring(env, status)
 
+def setcpxterminate(env):
+    CR.setcpxterminate(env)
+
+def unset_cpx_terminator():
+    CR.unset_cpx_terminator()
+
+def set_cpx_terminator():
+    CR.set_cpx_terminator()
+
+def setpyterminate(env):
+    CR.setpyterminate(env)
+
 def unset_py_terminator():
     CR.unset_py_terminator()
 
 def set_py_terminator():
     CR.set_py_terminator()
 
-def sigint_swap():
-    CR.sigint_swap()
+class SigIntHandler(object):
+    """Handle Ctrl-C events during long running processes.
+
+    :undocumented
+    """
+
+    def __init__(self):
+        self.orig_handler = signal.getsignal(signal.SIGINT)
+        self.was_triggered = False
+        def sigint_handler(signum, frame):
+            set_py_terminator()
+            self.was_triggered = True
+        # Make sure that we always start out with an "unset" terminator.
+        unset_py_terminator()
+        signal.signal(signal.SIGINT, sigint_handler)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # There is no way to unset the cpx terminate flag used for the
+        # global terminate() function, so do it here automatically.
+        unset_cpx_terminator()
+        signal.signal(signal.SIGINT, self.orig_handler)
+        if self.was_triggered:
+            print("\nKeyboardInterrupt")
 
 def pack_env_lp_ptr(env, lp):
     return CR.pack_env_lp_ptr(env, lp)
+
+@contextmanager
+def chbmatrix(lolmat, env_lp, r_c, enc):
+    """See matrix_conversion.c:Pylolmat_to_CHBmat()."""
+    mat = Pylolmat_to_CHBmat(lolmat, env_lp, r_c, enc)
+    try:
+        # yields ([matbeg, matind, matval], nnz)
+        yield mat[:-1], mat[-1]
+    finally:
+        free_CHBmat(mat)
 
 def Pylolmat_to_CHBmat(lolmat, get_indices, r_c, enc):
     return CR.Pylolmat_to_CHBmat(lolmat, get_indices, r_c, cpx_transcode, enc)
@@ -128,43 +198,72 @@ def free_CHBmat(lolmat):
     CR.free_CHBmat(lolmat)
 
 class StatusChecker:
+    """A callable object used for checking status codes.
+
+    :undocumented
+    """
     def __init__(self):
         class NoOp:
             pass
         self._pyenv = NoOp()
         self._pyenv._callback_exception = None
-    def __call__(self, env, status, from_cb=0):
+
+    def _handle_cb_error(self, env, cberror):
+        """Handle the callback exception.
+
+        These can be triggered either in the SWIG Python C API layer
+        (e.g., SWIG_callback.c) or in _ostream.py.
+        """
+        if isinstance(cberror, Exception):
+            # If cberror is already an exception, then just throw it as is.
+            # We can only get here from: _ostream.py:_write_wrap.
+            raise cberror
+        if isinstance(cberror[1], Exception):
+            # In this case the first item is the type of exception and
+            # the second item is the exception.  This is raised from the
+            # SWIG C layer (e.g., SWIG_callback.c:).
+            cberror = cberror[1]
+        elif isinstance(cberror[1], tuple):
+            # The second item is a tuple containing the error string and
+            # the error number.  We can get this from, for example:
+            # SWIG_callback.c:fast_getcallbackinfo.
+            assert len(cberror[1]) == 2
+            cberror = cberror[0](cberror[1][0], env, cberror[1][1])
+        else:
+            # The second item is the error string or perhaps None.
+            # See code in SWIG_callback.c where the _callback_exception
+            # attribute is set.
+            cberror = cberror[0](cberror[1])
+        raise cberror
+
+    def __call__(self, env, status, from_cb=False):
         error_string = None
         try:
             if self._pyenv._callback_exception is not None:
                 callback_exception = self._pyenv._callback_exception
                 self._pyenv._callback_exception = None
+                # If an error message is detected on the error channel in
+                # _ostream.py:_write_wrap, then the py_terminator is
+                # triggered.  We must unset it here or else any
+                # additional calls will result in a CPXERR_ABORT_USER
+                # (i.e., we don't want to prevent the user from catching
+                # an exception and ignoring it).
                 unset_py_terminator()
-                if isinstance(callback_exception, Exception) and \
-                       len(callback_exception.args) == 2 and \
-                       callback_exception.args[0] == "ERROR":
-                    error_string = callback_exception.args[1]
+                if isinstance(callback_exception, ErrorChannelMessage):
+                    # We can only get here from _ostream.py:_write_wrap.
+                    # If we encounter an error, we use the last message
+                    # from the error channel for the message (i.e., rather
+                    # than calling CPXXgeterrorstring).
+                    error_string = callback_exception.args[0]
                 else:
-                    try:
-                        if isinstance(callback_exception, Exception):
-                            raise callback_exception
-                        if hasattr(callback_exception[1], "args"):
-                            callback_exception = callback_exception[0](
-                                *callback_exception[1].args)
-                        else:
-                            callback_exception = callback_exception[0](
-                                callback_exception[1])
-                        raise callback_exception
-                    except KeyboardInterrupt:
-                        print("KeyboardInterrupt")
-                        return
+                    self._handle_cb_error(env, callback_exception)
         except ReferenceError:
             pass
         if status == CR.CPXERR_NO_ENVIRONMENT:
             raise ValueError('illegal method invocation after Cplex.end()')
         elif status != 0:
             if error_string is None:
-                if from_cb == 1:
+                if from_cb:
                     error_string = cb_geterrorstring(env, status)
                 else:
                     error_string = geterrorstring(env, status)
@@ -196,7 +295,6 @@ def closeCPLEX(env):
     envp.assign(env)
     status = CR.CPXXcloseCPLEX(envp)
     check_status(env, status)
-    return
 
 def getchannels(env):
     results = CR.CPXCHANNELptrPtr()
@@ -210,99 +308,80 @@ def getchannels(env):
 def addfuncdest(env, channel, fileobj):
     status = CR.CPXXaddfuncdest(env, channel, fileobj)
     check_status(env, status)
-    return
 
 def delfuncdest(env, channel, fileobj):
     status = CR.CPXXdelfuncdest(env, channel, fileobj)
     check_status(env, status)
-    return
 
 def setlpcallbackfunc(env, cbhandle):
     status = CR.CPXXsetlpcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setnetcallbackfunc(env, cbhandle):
     status = CR.CPXXsetnetcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def settuningcallbackfunc(env, cbhandle):
     status = CR.CPXXsettuningcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setheuristiccallbackfunc(env, cbhandle):
     status = CR.CPXXsetheuristiccallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setlazyconstraintcallbackfunc(env, cbhandle):
     status = CR.CPXXsetlazyconstraintcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setusercutcallbackfunc(env, cbhandle):
     status = CR.CPXXsetusercutcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setincumbentcallbackfunc(env, cbhandle):
     status = CR.CPXXsetincumbentcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setnodecallbackfunc(env, cbhandle):
     status = CR.CPXXsetnodecallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setbranchcallbackfunc(env, cbhandle):
     status = CR.CPXXsetbranchcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setbranchnosolncallbackfunc(env, cbhandle):
     status = CR.CPXXsetbranchnosolncallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setsolvecallbackfunc(env, cbhandle):
     status = CR.CPXXsetsolvecallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setinfocallbackfunc(env, cbhandle):
     status = CR.CPXXsetinfocallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 def setmipcallbackfunc(env, cbhandle):
     status = CR.CPXXsetmipcallbackfunc(env, cbhandle)
     check_status(env, status)
-    return
 
 # Parameters
 
 def setintparam(env, whichparam, newvalue):
     status = CR.CPXXsetintparam(env, whichparam, newvalue)
     check_status(env, status)
-    return
 
 def setlongparam(env, whichparam, newvalue):
     status = CR.CPXXsetlongparam(env, whichparam, newvalue)
     check_status(env, status)
-    return
 
 def setdblparam(env, whichparam, newvalue):
     status = CR.CPXXsetdblparam(env, whichparam, newvalue)
     check_status(env, status)
-    return
 
 def setstrparam(env, whichparam, newvalue):
     status = CR.CPXXsetstrparam(env, whichparam, newvalue)
     check_status(env, status)
-    return
 
 def getintparam(env, whichparam):
     curval = CR.intPtr()
@@ -364,15 +443,13 @@ def getparamtype(env, param_name):
     check_status(env, status)
     return output.value()
 
-def readcopyparam(env, filename):
-    status = CR.CPXXreadcopyparam(env, filename)
+def readcopyparam(env, filename, enc=default_encoding):
+    status = CR.CPXXreadcopyparam(env, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return 
 
-def writeparam(env, filename):
-    status = CR.CPXXwriteparam(env, filename)
+def writeparam(env, filename, enc=default_encoding):
+    status = CR.CPXXwriteparam(env, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 def tuneparam(env, lp, int_param_values, dbl_param_values, str_param_values):
     tuning_status = CR.intPtr()
@@ -385,19 +462,18 @@ def tuneparam(env, lp, int_param_values, dbl_param_values, str_param_values):
     dblval = [dbl_param_values[i][1] for i in range(dblcnt)]
     strnum = [str_param_values[i][0] for i in range(strcnt)]
     strval = [str_param_values[i][1] for i in range(strcnt)]
-    sigint_swap()
-    status = CR.CPXXtuneparam(env, lp,
-                              intcnt,
-                              LAU.int_list_to_array(intnum),
-                              LAU.int_list_to_array_trunc_int32(intval),
-                              dblcnt,
-                              LAU.int_list_to_array(dblnum),
-                              LAU.double_list_to_array(dblval),
-                              strcnt,
-                              LAU.int_list_to_array(strnum),
-                              [cpx_decode(x, default_encoding) for x in strval],
-                              tuning_status)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXtuneparam(
+            env, lp, intcnt,
+            LAU.int_list_to_array(intnum),
+            LAU.int_list_to_array_trunc_int32(intval),
+            dblcnt,
+            LAU.int_list_to_array(dblnum),
+            LAU.double_list_to_array(dblval),
+            strcnt,
+            LAU.int_list_to_array(strnum),
+            [cpx_decode(x, default_encoding) for x in strval],
+            tuning_status)
     check_status(env, status)
     return tuning_status.value()
 
@@ -413,19 +489,18 @@ def tuneparamprobset(env, filenames, filetypes, int_param_values,
     dblval = [dbl_param_values[i][1] for i in range(dblcnt)]
     strnum = [str_param_values[i][0] for i in range(strcnt)]
     strval = [str_param_values[i][1] for i in range(strcnt)]
-    sigint_swap()
-    status = CR.CPXXtuneparamprobset(
-        env, len(filenames),
-        [cpx_decode(x, default_encoding) for x in filenames],
-        [cpx_decode(x, default_encoding) for x in filetypes],
-        intcnt, LAU.int_list_to_array(intnum),
-        LAU.int_list_to_array_trunc_int32(intval),
-        dblcnt, LAU.int_list_to_array(dblnum),
-        LAU.double_list_to_array(dblval),
-        strcnt, LAU.int_list_to_array(strnum),
-        [cpx_decode(x, default_encoding) for x in strval],
-        tuning_status)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXtuneparamprobset(
+            env, len(filenames),
+            [cpx_decode(x, default_encoding) for x in filenames],
+            [cpx_decode(x, default_encoding) for x in filetypes],
+            intcnt, LAU.int_list_to_array(intnum),
+            LAU.int_list_to_array_trunc_int32(intval),
+            dblcnt, LAU.int_list_to_array(dblnum),
+            LAU.double_list_to_array(dblval),
+            strcnt, LAU.int_list_to_array(strnum),
+            [cpx_decode(x, default_encoding) for x in strval],
+            tuning_status)
     check_status(env, status)
     return tuning_status.value()
 
@@ -439,13 +514,15 @@ def createprob(env, probname, enc=default_encoding):
     check_status(env, status.value())
     return lp
 
-def readcopyprob(env, lp, filename, filetype=""):
+def readcopyprob(env, lp, filename, filetype="", enc=default_encoding):
     if filetype == "":
-        status = CR.CPXXreadcopyprob(env, lp, filename)
+        status = CR.CPXXreadcopyprob(env, lp,
+                                     cpx_decode_noop3(filename, enc))
     else:
-        status = CR.CPXXreadcopyprob(env, lp, filename, filetype)
+        status = CR.CPXXreadcopyprob(env, lp,
+                                     cpx_decode_noop3(filename, enc),
+                                     cpx_decode_noop3(filetype, enc))
     check_status(env, status)
-    return
 
 def cloneprob(env, lp):
     status = CR.intPtr()
@@ -458,28 +535,23 @@ def freeprob(env, lp):
     lpp.assign(lp)
     status = CR.CPXXfreeprob(env, lpp)
     check_status(env, status)
-    return
     
 def mipopt(env, lp):
-    sigint_swap()
-    status = CR.CPXXmipopt(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXmipopt(env, lp)
     check_status(env, status)
-    return
 
 def distmipopt(env, lp):
-    sigint_swap()
-    status = CR.CPXXdistmipopt(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXdistmipopt(env, lp)
     check_status(env, status)
-    return
 
 def copyvmconfig(env, xmlstring):
     status = CR.CPXXcopyvmconfig(env, xmlstring)
     check_status(env, status)
 
-def readcopyvmconfig(env, file):
-    status = CR.CPXXreadcopyvmconfig(env, file)
+def readcopyvmconfig(env, filename, enc=default_encoding):
+    status = CR.CPXXreadcopyvmconfig(env, cpx_decode_noop3(filename, enc))
     check_status(env, status)
 
 def delvmconfig(env):
@@ -493,126 +565,104 @@ def hasvmconfig(env):
     return hasvmconfig_p.value() != 0
 
 def qpopt(env, lp):
-    sigint_swap()
-    status = CR.CPXXqpopt(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXqpopt(env, lp)
     check_status(env, status)
-    return
 
 def baropt(env, lp):
-    sigint_swap()
-    status = CR.CPXXbaropt(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXbaropt(env, lp)
     check_status(env, status)
-    return
 
 def hybbaropt(env, lp, method):
-    sigint_swap()
-    status = CR.CPXXhybbaropt(env, lp, method)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXhybbaropt(env, lp, method)
     check_status(env, status)
-    return
 
 def hybnetopt(env, lp, method):
-    sigint_swap()
-    status = CR.CPXXhybnetopt(env, lp, method)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXhybnetopt(env, lp, method)
     check_status(env, status)
-    return
     
 def lpopt(env, lp):
-    sigint_swap()
-    status = CR.CPXXlpopt(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXlpopt(env, lp)
     check_status(env, status)
-    return
 
 def primopt(env, lp):
     status = CR.CPXXprimopt(env, lp)
     check_status(env, status)
-    return
 
 def dualopt(env, lp):
     status = CR.CPXXdualopt(env, lp)
     check_status(env, status)
-    return
 
 def siftopt(env, lp):
     status = CR.CPXXsiftopt(env, lp)
     check_status(env, status)
-    return
-
-def feasopt(env, lp, rhs, rng, lb, ub):
-    sigint_swap()
-    status = CR.CPXXfeasopt(env, lp, LAU.double_list_to_array(rhs),
-                           LAU.double_list_to_array(rng),
-                           LAU.double_list_to_array(lb),
-                           LAU.double_list_to_array(ub))
-    sigint_swap()
-    check_status(env, status)
-    return
 
 def feasoptext(env, lp, grppref, grpbeg, grpind, grptype):
     grpcnt = len(grppref)
     concnt = len(grpind)
-    sigint_swap()
-    status = CR.CPXXfeasoptext(env, lp, grpcnt, concnt,
-                              LAU.double_list_to_array(grppref), LAU.int_list_to_array(grpbeg),
-                              LAU.int_list_to_array(grpind), grptype)
-    sigint_swap()
+    with SigIntHandler(), \
+         LAU.double_c_array(grppref) as c_grppref, \
+         LAU.int_c_array(grpbeg) as c_grpbeg, \
+         LAU.int_c_array(grpind) as c_grpind:
+        status = CR.CPXXfeasoptext(env, lp, grpcnt, concnt,
+                                   c_grppref, c_grpbeg,
+                                   c_grpind, grptype)
     check_status(env, status)
-    return
 
 def delnames(env, lp):
     status = CR.CPXXdelnames(env, lp)
     check_status(env, status)
-    return
 
-def writeprob(env, lp, filename, filetype = ""):
+def writeprob(env, lp, filename, filetype="", enc=default_encoding):
     if filetype == "":
-        status = CR.CPXXwriteprob(env, lp, filename)
+        status = CR.CPXXwriteprob(env, lp,
+                                  cpx_decode_noop3(filename, enc))
     else:
-        status = CR.CPXXwriteprob(env, lp, filename, filetype)
+        status = CR.CPXXwriteprob(env, lp,
+                                  cpx_decode_noop3(filename, enc),
+                                  cpx_decode_noop3(filetype, enc))
     check_status(env, status)
-    return
 
-def embwrite(env, lp, filename):
-    status = CR.CPXXembwrite(env, lp, filename)
+def embwrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXembwrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
-def dperwrite(env, lp, filename, epsilon):
-    status = CR.CPXXdperwrite(env, lp, filename, epsilon)
+def dperwrite(env, lp, filename, epsilon, enc=default_encoding):
+    status = CR.CPXXdperwrite(env, lp, cpx_decode_noop3(filename, enc),
+                              epsilon)
     check_status(env, status)
-    return
-    
-def pperwrite(env, lp, filename, epsilon):
-    status = CR.CPXXpperwrite(env, lp, filename, epsilon)
+
+def pperwrite(env, lp, filename, epsilon, enc=default_encoding):
+    status = CR.CPXXpperwrite(env, lp, cpx_decode_noop3(filename, enc),
+                              epsilon)
     check_status(env, status)
-    return
     
-def preslvwrite(env, lp, filename):
+def preslvwrite(env, lp, filename, enc=default_encoding):
     objoff = CR.doublePtr()
-    status = CR.CPXXpreslvwrite(env, lp, filename, objoff)
+    status = CR.CPXXpreslvwrite(env, lp, cpx_decode_noop3(filename, enc),
+                                objoff)
     check_status(env, status)
     return objoff.value()
     
-def dualwrite(env, lp, filename):
+def dualwrite(env, lp, filename, enc=default_encoding):
     objshift = CR.doublePtr()
-    status   = CR.CPXXdualwrite(env, lp, filename, objshift)
+    status   = CR.CPXXdualwrite(env, lp, cpx_decode_noop3(filename, enc),
+                                objshift)
     check_status(env, status)
     return objshift.value()
 
-def chgprobtype(env, lp, type):
-    status = CR.CPXXchgprobtype(env, lp, type)
+def chgprobtype(env, lp, probtype):
+    status = CR.CPXXchgprobtype(env, lp, probtype)
     check_status(env, status)
-    return
 
-def chgprobtypesolnpool(env, lp, type, soln):
-    status = CR.CPXXchgprobtypesolnpool(env, lp, type, soln)
+def chgprobtypesolnpool(env, lp, probtype, soln):
+    status = CR.CPXXchgprobtypesolnpool(env, lp, probtype, soln)
     check_status(env, status)
-    return
-    
+
 def getprobtype(env, lp):
     return CR.CPXXgetprobtype(env, lp)
 
@@ -621,15 +671,8 @@ def chgprobname(env, lp, probname, enc=default_encoding):
     check_status(env, status)
 
 def getprobname(env, lp, enc=default_encoding):
-    inoutlist = [0]
-    status = CR.CPXXgetprobname(env, lp, inoutlist)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inoutlist == [0]:
-        return cpx_encode_noop3("", enc)
-    status = CR.CPXXgetprobname(env, lp, inoutlist)
-    check_status(env, status)
-    return cpx_encode_noop3(inoutlist[0], enc)
+    namefn = CR.CPXXgetprobname
+    return _getnamesingle(env, lp, enc, namefn)
 
 def getnumcols(env, lp):
     return CR.CPXXgetnumcols(env, lp)
@@ -650,11 +693,9 @@ def getnumrows(env, lp):
     return CR.CPXXgetnumrows(env, lp)
 
 def populate(env, lp):
-    sigint_swap()
-    status = CR.CPXXpopulate(env, lp)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXpopulate(env, lp)
     check_status(env, status)
-    return
 
 def _getnumusercuts(env, lp):
     return CR.CPXXgetnumusercuts(env, lp)
@@ -668,9 +709,6 @@ def _hasgeneralconstraints(env, lp):
             return True
     return False
 
-def getnummipstarts(env, lp):
-    return CR.CPXXgetnummipstarts(env, lp)
-
 def getnumqconstrs(env, lp):
     return CR.CPXXgetnumqconstrs(env, lp)
 
@@ -683,7 +721,6 @@ def getnumsos(env, lp):
 def cleanup(env, lp, eps):
     status = CR.CPXXcleanup(env, lp, eps)
     check_status(env, status)
-    return
 
 def basicpresolve(env, lp):
     numcols = CR.CPXXgetnumcols(env, lp)
@@ -693,110 +730,100 @@ def basicpresolve(env, lp):
     rstat   = _safeIntArray(numrows)
     status  = CR.CPXXbasicpresolve(env, lp, redlb, redub, rstat)
     check_status(env, status)
-    return (LAU.double_array_to_list(redlb, numcols),
-            LAU.double_array_to_list(redub, numcols),
-            LAU.int_array_to_list(rstat, numrows))
+    return (LAU.array_to_list(redlb, numcols),
+            LAU.array_to_list(redub, numcols),
+            LAU.array_to_list(rstat, numrows))
 
 def pivotin(env, lp, rlist):
-    status = CR.CPXXpivotin(env, lp, LAU.int_list_to_array(rlist), len(rlist))
+    status = CR.CPXXpivotin(env, lp,
+                            LAU.int_list_to_array(rlist),
+                            len(rlist))
     check_status(env, status)
-    return
 
 def pivotout(env, lp, clist):
-    status = CR.CPXXpivotout(env, lp, LAU.int_list_to_array(clist), len(clist))
+    status = CR.CPXXpivotout(env, lp,
+                             LAU.int_list_to_array(clist),
+                             len(clist))
     check_status(env, status)
-    return
-    
+
 def pivot(env, lp, jenter, jleave, leavestat):
     status = CR.CPXXpivot(env, lp, jenter, jleave, leavestat)
     check_status(env, status)
-    return
 
 def strongbranch(env, lp, goodlist, itlim):
     goodlen = len(goodlist)
     downpen = _safeDoubleArray(goodlen)
     uppen   = _safeDoubleArray(goodlen)
-    sigint_swap()
-    status = CR.CPXXstrongbranch(env, lp, goodlen, goodlist, downpen, uppen, itlim)
-    sigint_swap()
+    with SigIntHandler():
+        status = CR.CPXXstrongbranch(env, lp, goodlen, goodlist,
+                                     downpen, uppen, itlim)
     check_status(env, status)
-    return (LAU.double_array_to_list(downpen, goodlen),
-            LAU.double_array_to_list(uppen, goodlen))
+    return (LAU.array_to_list(downpen, goodlen),
+            LAU.array_to_list(uppen, goodlen))
 
 def completelp(env, lp):
     status = CR.CPXXcompletelp(env, lp)
     check_status(env, status)
-    return    
-
 
 # Variables
 
 def newcols(env, lp, obj, lb, ub, xctype, colname, enc=default_encoding):
     ccnt = max(len(obj), len(lb), len(ub), len(xctype), len(colname))
-    obj = LAU.double_C_array(obj)
-    lb  = LAU.double_C_array(lb)
-    ub  = LAU.double_C_array(ub)
-    status = CR.CPXXnewcols(env, lp, ccnt, obj.array,
-                            lb.array, ub.array,
-                            cpx_decode(xctype, enc),
-                            [cpx_decode(x, enc) for x in colname])
+    with LAU.double_c_array(obj) as c_obj, \
+         LAU.double_c_array(lb) as c_lb, \
+         LAU.double_c_array(ub) as c_ub:
+        status = CR.CPXXnewcols(
+            env, lp, ccnt, c_obj, c_lb, c_ub,
+            cpx_decode(xctype, enc),
+            [cpx_decode(x, enc) for x in colname])
     check_status(env, status)
-    return
 
-def addcols(env, lp, ccnt, nzcnt, obj, cmat, lb, ub, colname, enc=default_encoding):
-    obj = LAU.double_C_array(obj)
-    lb  = LAU.double_C_array(lb)
-    ub  = LAU.double_C_array(ub)
-    status = CR.CPXXaddcols(env, lp, ccnt, nzcnt, obj.array, cmat._mat,
-                            lb.array, ub.array,
-                            [cpx_decode(x, enc) for x in colname])
+def addcols(env, lp, ccnt, nzcnt, obj, cmat, lb, ub, colname,
+            enc=default_encoding):
+    with LAU.double_c_array(obj) as c_obj, \
+         LAU.double_c_array(lb) as c_lb, \
+         LAU.double_c_array(ub) as c_ub:
+        status = CR.CPXXaddcols(
+            env, lp, ccnt, nzcnt,
+            c_obj, cmat, c_lb, c_ub,
+            [cpx_decode(x, enc) for x in colname])
     check_status(env, status)
-    return
 
 def delcols(env, lp, begin, end):
-    status = CR.CPXXdelcols(env, lp, begin, end)
-    check_status(env, status)
-    return [0]
+    delfn = CR.CPXXdelcols
+    _delbyrange(delfn, env, lp, begin, end)
 
 def chgbds(env, lp, indices, lu, bd):
-    status = CR.CPXXchgbds(env, lp, len(indices), LAU.int_list_to_array(indices),
-                          lu, LAU.double_list_to_array(bd))
+    with LAU.int_c_array(indices) as c_ind, \
+         LAU.double_c_array(bd) as c_bd:
+        status = CR.CPXXchgbds(env, lp, len(indices),
+                               c_ind, lu, c_bd)
     check_status(env, status)
-    return
 
 def chgcolname(env, lp, indices, newnames, enc=default_encoding):
-    status = CR.CPXXchgcolname(env, lp, len(indices),
-                               LAU.int_list_to_array(indices),
-                               [cpx_decode(x, enc) for x in newnames])
+    with LAU.int_c_array(indices) as c_indices:
+        status = CR.CPXXchgcolname(env, lp, len(indices),
+                                   c_indices,
+                                   [cpx_decode(x, enc) for x in newnames])
     check_status(env, status)
-    return
 
 def chgctype(env, lp, indices, xctype):
-    status = CR.CPXXchgctype(env, lp, len(indices),
-                             LAU.int_list_to_array(indices),
-                             cpx_decode(xctype, default_encoding))
+    with LAU.int_c_array(indices) as c_indices:
+        status = CR.CPXXchgctype(env, lp, len(indices),
+                                 c_indices,
+                                 cpx_decode(xctype, default_encoding))
     check_status(env, status)
-    return
 
 def getcolindex(env, lp, colname, enc=default_encoding):
     index = CR.intPtr()
-    status = CR.CPXXgetcolindex(env, lp, cpx_decode_noop3(colname, enc), index)
+    status = CR.CPXXgetcolindex(env, lp, cpx_decode_noop3(colname, enc),
+                                index)
     check_status(env, status)
     return index.value()
 
 def getcolname(env, lp, begin, end, enc=default_encoding):
-    inout_list = [0, begin, end]
-    status = CR.CPXXgetcolname(env, lp, inout_list)
-    if status == CR.CPXERR_NO_NAMES:
-        return []
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inout_list == [0]:
-        return [cpx_encode_noop3(x, enc) for x in [""] * (end - begin + 1)]
-    inout_list.extend([begin, end])
-    status = CR.CPXXgetcolname(env, lp, inout_list)
-    check_status(env, status)
-    return [cpx_encode_noop3(x, enc) for x in inout_list]
+    namefn = CR.CPXXgetcolname
+    return _getnamebyrange(env, lp, begin, end, enc, namefn)
 
 def getctype(env, lp, begin, end):
     inout_list = [begin, end]
@@ -807,18 +834,18 @@ def getctype(env, lp, begin, end):
     return cpx_encode(inout_list[0], default_encoding)
 
 def getlb(env, lp, begin, end):
-    lblen = end - begin + 1
+    lblen = _rangelen(begin, end)
     lb    = _safeDoubleArray(lblen)
     status = CR.CPXXgetlb(env, lp, lb, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(lb, lblen)
+    return LAU.array_to_list(lb, lblen)
 
 def getub(env, lp, begin, end):
-    ublen = end - begin + 1
+    ublen = _rangelen(begin, end)
     ub    = _safeDoubleArray(ublen)
     status = CR.CPXXgetub(env, lp, ub, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(ub, ublen)
+    return LAU.array_to_list(ub, ublen)
 
 def getcols(env, lp, begin, end):
     inout_list = [0, begin, end]
@@ -826,16 +853,16 @@ def getcols(env, lp, begin, end):
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     if inout_list == [0]:
-        return ([0] * (end - begin + 1), [], [])
+        return ([0] * _rangelen(begin, end), [], [])
     inout_list.extend([begin, end])
     status = CR.CPXXgetcols(env, lp, inout_list)
     check_status(env, status)
     return tuple(inout_list)
     
 def copyprotected(env, lp, indices):
-    status = CR.CPXXcopyprotected(env, lp, len(indices), LAU.int_list_to_array(indices))
+    status = CR.CPXXcopyprotected(env, lp, len(indices),
+                                  LAU.int_list_to_array(indices))
     check_status(env, status)
-    return    
 
 def getprotected(env, lp):
     count   = CR.intPtr()
@@ -851,83 +878,78 @@ def getprotected(env, lp):
     indices = _safeIntArray(pspace)
     status  = CR.CPXXgetprotected(env, lp, count, indices, pspace, surplus)
     check_status(env, status)
-    return LAU.int_array_to_list(indices, pspace)
+    return LAU.array_to_list(indices, pspace)
 
 def tightenbds(env, lp, indices, lu, bd):
-    status = CR.CPXXtightenbds(env, lp, len(indices), LAU.int_list_to_array(indices),
-                              lu, LAU.double_list_to_array(bd))
+    status = CR.CPXXtightenbds(env, lp, len(indices),
+                               LAU.int_list_to_array(indices),
+                               lu, LAU.double_list_to_array(bd))
     check_status(env, status)
-    return
 
 # Linear Constraints
 
 def newrows(env, lp, rhs, sense, rngval, rowname, enc=default_encoding):
     rcnt = max(len(rhs), len(sense), len(rngval), len(rowname))
-    rhs = LAU.double_C_array(rhs)
-    rng = LAU.double_C_array(rngval)
-    status = CR.CPXXnewrows(env, lp, rcnt, rhs.array,
-                            cpx_decode(sense, enc),
-                            rng.array,
-                            [cpx_decode(x, enc) for x in rowname])
+    with LAU.double_c_array(rhs) as c_rhs, \
+         LAU.double_c_array(rngval) as c_rng:
+        status = CR.CPXXnewrows(
+            env, lp, rcnt, c_rhs,
+            cpx_decode(sense, enc),
+            c_rng,
+            [cpx_decode(x, enc) for x in rowname])
     check_status(env, status)
-    return
 
 def addrows(env, lp, ccnt, rcnt, nzcnt, rhs, sense, rmat, colname, rowname,
             enc=default_encoding):
-    rhs = LAU.double_C_array(rhs)
-    status = CR.CPXXaddrows(env, lp, ccnt, rcnt, nzcnt, rhs.array, 
-                            cpx_decode(sense, enc), rmat._mat, colname,
-                            [cpx_decode(x, enc) for x in rowname])
+    with LAU.double_c_array(rhs) as c_rhs:
+        status = CR.CPXXaddrows(
+            env, lp, ccnt, rcnt, nzcnt, c_rhs,
+            cpx_decode(sense, enc), rmat, colname,
+            [cpx_decode(x, enc) for x in rowname])
     check_status(env, status)
-    return
 
 def delrows(env, lp, begin, end):
-    status = CR.CPXXdelrows(env, lp, begin, end)
-    check_status(env, status)
-    return [0]
+    delfn = CR.CPXXdelrows
+    _delbyrange(delfn, env, lp, begin, end)
 
 def chgrowname(env, lp, indices, newnames, enc=default_encoding):
-    status = CR.CPXXchgrowname(env, lp, len(indices),
-                               LAU.int_list_to_array(indices),
-                               [cpx_decode(x, enc) for x in newnames])
+    with LAU.int_c_array(indices) as c_indices:
+        status = CR.CPXXchgrowname(env, lp, len(indices), c_indices,
+                                   [cpx_decode(x, enc) for x in newnames])
     check_status(env, status)
-    return
 
 def chgcoeflist(env, lp, rowlist, collist, vallist):
-    status = CR.CPXXchgcoeflist(env, lp, len(rowlist),
-                               LAU.int_list_to_array(rowlist),
-                               LAU.int_list_to_array(collist),
-                               LAU.double_list_to_array(vallist))
+    with LAU.int_c_array(rowlist) as c_rowlist, \
+         LAU.int_c_array(collist) as c_collist, \
+         LAU.double_c_array(vallist) as c_vallist:
+        status = CR.CPXXchgcoeflist(env, lp, len(rowlist),
+                                    c_rowlist, c_collist, c_vallist)
     check_status(env, status)
-    return
 
 def chgrhs(env, lp, indices, values):
-    status = CR.CPXXchgrhs(env, lp, len(indices),
-                           LAU.int_list_to_array(indices),
-                           LAU.double_list_to_array(values))
+    with LAU.int_c_array(indices) as c_ind, \
+         LAU.double_c_array(values) as c_val:
+        status = CR.CPXXchgrhs(env, lp, len(indices), c_ind, c_val)
     check_status(env, status)
-    return
 
 def chgrngval(env, lp, indices, values):
-    ind = LAU.int_C_array(indices)
-    val = LAU.double_C_array(values)
-    status = CR.CPXXchgrngval(env, lp, len(indices), ind.array, val.array)
+    with LAU.int_c_array(indices) as c_ind, \
+         LAU.double_c_array(values) as c_val:
+        status = CR.CPXXchgrngval(env, lp, len(indices), c_ind, c_val)
     check_status(env, status)
-    return
 
 def chgsense(env, lp, indices, senses):
-    status = CR.CPXXchgsense(env, lp, len(indices),
-                             LAU.int_list_to_array(indices),
-                             cpx_decode(senses, default_encoding))
+    with LAU.int_c_array(indices) as c_indices:
+        status = CR.CPXXchgsense(env, lp, len(indices), c_indices,
+                                 cpx_decode(senses, default_encoding))
     check_status(env, status)
-    return
 
 def getrhs(env, lp, begin, end):
-    rhslen = end - begin + 1
+    rhslen = _rangelen(begin, end)
     rhs = _safeDoubleArray(rhslen)
     status = CR.CPXXgetrhs(env, lp, rhs, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(rhs, rhslen)
+    return LAU.array_to_list(rhs, rhslen)
 
 def getsense(env, lp, begin, end):
     inout_list = [begin, end]
@@ -938,27 +960,15 @@ def getsense(env, lp, begin, end):
     return cpx_encode(inout_list[0], default_encoding)
 
 def getrngval(env, lp, begin, end):
-    rngvallen = end - begin + 1
+    rngvallen = _rangelen(begin, end)
     rngval    = _safeDoubleArray(rngvallen)
     status = CR.CPXXgetrngval(env, lp, rngval, begin, end)
-    if status == CR.CPXERR_NO_RNGVAL:
-        return []
     check_status(env, status)
-    return LAU.double_array_to_list(rngval, rngvallen)
+    return LAU.array_to_list(rngval, rngvallen)
 
 def getrowname(env, lp, begin, end, enc=default_encoding):
-    inout_list = [0, begin, end]
-    status = CR.CPXXgetrowname(env, lp, inout_list)
-    if status == CR.CPXERR_NO_NAMES:
-        return []
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inout_list == [0]:
-        return [cpx_encode_noop3(x, enc) for x in [""] * (end - begin + 1)]
-    inout_list.extend([begin, end])
-    status = CR.CPXXgetrowname(env, lp, inout_list)
-    check_status(env, status)
-    return [cpx_encode_noop3(x, enc) for x in inout_list]
+    namefn = CR.CPXXgetrowname
+    return _getnamebyrange(env, lp, begin, end, enc, namefn)
 
 def getcoef(env, lp, i, j):
     coef = CR.doublePtr()
@@ -978,7 +988,7 @@ def getrows(env, lp, begin, end):
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     if inout_list == [0]:
-        return ([0] * (end - begin + 1), [], [])
+        return ([0] * _rangelen(begin, end), [], [])
     inout_list.extend([begin, end])
     status = CR.CPXXgetrows(env, lp, inout_list)
     check_status(env, status)
@@ -987,55 +997,57 @@ def getrows(env, lp, begin, end):
 def getnumnz(env, lp):
     return CR.CPXXgetnumnz(env, lp)
 
-def addlazyconstraints(env, lp, rhs, sense, rmatbeg, rmatind, rmatval, names,
+def addlazyconstraints(env, lp, rhs, sense, lin_expr, names,
                        enc=default_encoding):
-    status = CR.CPXXaddlazyconstraints(env, lp, len(rmatbeg), len(rmatind),
-                                       LAU.double_list_to_array(rhs),
-                                       cpx_decode(sense, enc),
-                                       LAU.int_list_to_array(rmatbeg),
-                                       LAU.int_list_to_array(rmatind),
-                                       LAU.double_list_to_array(rmatval),
-                                       [cpx_decode(x, enc) for x in names])
+    env_lp_ptr = pack_env_lp_ptr(env, lp)
+    with chbmatrix(lin_expr, env_lp_ptr, 0, enc) as (rmat, nnz), \
+         LAU.double_c_array(rhs) as c_rhs:
+        rmatbeg, rmatind, rmatval = rmat
+        status = CR.CPXXaddlazyconstraints(
+            env, lp, len(rhs), nnz,
+            c_rhs, cpx_decode(sense, enc),
+            rmatbeg, rmatind, rmatval,
+            [cpx_decode(x, enc) for x in names])
     check_status(env, status)
-    return
 
-def addusercuts(env, lp, rhs, sense, rmatbeg, rmatind, rmatval, names,
+def addusercuts(env, lp, rhs, sense, lin_expr, names,
                 enc=default_encoding):
-    status = CR.CPXXaddusercuts(env, lp, len(rmatbeg), len(rmatind),
-                                LAU.double_list_to_array(rhs),
-                                cpx_decode(sense, enc),
-                                LAU.int_list_to_array(rmatbeg),
-                                LAU.int_list_to_array(rmatind),
-                                LAU.double_list_to_array(rmatval),
-                                [cpx_decode(x, enc) for x in names])
+    env_lp_ptr = pack_env_lp_ptr(env, lp)
+    with chbmatrix(lin_expr, env_lp_ptr, 0, enc) as (rmat, nnz), \
+         LAU.double_c_array(rhs) as c_rhs:
+        rmatbeg, rmatind, rmatval = rmat
+        status = CR.CPXXaddusercuts(
+            env, lp, len(rhs), nnz,
+            c_rhs, cpx_decode(sense, enc),
+            rmatbeg, rmatind, rmatval,
+            [cpx_decode(x, enc) for x in names])
     check_status(env, status)
-    return
 
 def freelazyconstraints(env, lp):
     status = CR.CPXXfreelazyconstraints(env, lp)
     check_status(env, status)
-    return
 
 def freeusercuts(env, lp):
     status = CR.CPXXfreeusercuts(env, lp)
     check_status(env, status)
-    return
 
-# SOS
+########################################################################
+# SOS API
+########################################################################
 
-def addsos(env, lp, sostype, sosbeg, sosind, soswt, sosnames, enc=default_encoding):
-    status = CR.CPXXaddsos(env, lp, len(sosbeg), len(sosind), sostype,
-                           LAU.int_list_to_array(sosbeg),
-                           LAU.int_list_to_array(sosind),
-                           LAU.double_list_to_array(soswt),
-                           [cpx_decode(x, enc) for x in sosnames])
+def addsos(env, lp, sostype, sosbeg, sosind, soswt, sosnames,
+           enc=default_encoding):
+    with LAU.int_c_array(sosbeg) as c_sosbeg, \
+         LAU.int_c_array(sosind) as c_sosind, \
+         LAU.double_c_array(soswt) as c_soswt:
+        status = CR.CPXXaddsos(env, lp, len(sosbeg), len(sosind), sostype,
+                               c_sosbeg, c_sosind, c_soswt,
+                               [cpx_decode(x, enc) for x in sosnames])
     check_status(env, status)
-    return
 
-def delsetsos(env, lp, delset):
-    status = CR.CPXXdelsetsos(env, lp, LAU.int_list_to_array(delset))
-    check_status(env, status)
-    return
+def delsos(env, lp, begin, end):
+    delfn = CR.CPXXdelsos
+    _delbyrange(delfn, env, lp, begin, end)
 
 def getsos_info(env, lp, begin, end):
     inout_list = [0, begin, end]
@@ -1048,7 +1060,7 @@ def getsos_info(env, lp, begin, end):
     return tuple(inout_list)
 
 def getsos(env, lp, begin, end):
-    numsos = (end - begin + 1)
+    numsos = _rangelen(begin, end)
     _, surplus = getsos_info(env, lp, begin, end)
     if surplus == 0:
         return ([0] * numsos, [], [])
@@ -1060,39 +1072,27 @@ def getsos(env, lp, begin, end):
     return tuple(inout_list)
 
 def getsosindex(env, lp, name, enc=default_encoding):
-    index  = CR.intPtr()
-    status = CR.CPXXgetsosindex(env, lp, cpx_decode_noop3(name, enc), index)
-    check_status(env, status)
-    return index.value()
+    indexfn = CR.CPXXgetsosindex
+    return _getindex(env, lp, name, enc, indexfn)
 
 def getsosname(env, lp, begin, end, enc=default_encoding):
-    if end < begin:
-        return []
-    inout_list = [0, begin, end]
-    status = CR.CPXXgetsosname(env, lp, inout_list)
-    if status == CR.CPXERR_NO_NAMES:
-        return []
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inout_list == [0]:
-        return [cpx_encode_noop3(x, enc) for x in [""] * (end - begin + 1)]
-    inout_list.extend([begin, end])
-    status = CR.CPXXgetsosname(env, lp, inout_list)
-    check_status(env, status)
-    return [cpx_encode_noop3(x, enc)for x in inout_list]
+    namefn = CR.CPXXgetsosname
+    return _getnamebyrange(env, lp, begin, end, enc, namefn)
 
-# Indicator Constraints
+########################################################################
+# Indicator Constraint API
+########################################################################
 
 def addindconstr(env, lp, indvar, complemented, rhs, sense, linind, linval,
                  name, enc=default_encoding):
-    status = CR.CPXXaddindconstr(env, lp, indvar, complemented, len(linind),
-                                 rhs,
-                                 cpx_decode(sense, enc),
-                                 LAU.int_list_to_array(linind),
-                                 LAU.double_list_to_array(linval),
-                                 cpx_decode_noop3(name, enc))
+    with LAU.int_c_array(linind) as c_linind, \
+         LAU.double_c_array(linval) as c_linval:
+        status = CR.CPXXaddindconstr(env, lp, indvar, complemented,
+                                     len(linind), rhs,
+                                     cpx_decode(sense, enc),
+                                     c_linind, c_linval,
+                                     cpx_decode_noop3(name, enc))
     check_status(env, status)
-    return
 
 def getindconstr(env, lp, which):
     _, _, _, _, surplus = getindconstr_constant(env, lp, which)
@@ -1119,48 +1119,41 @@ def getindconstr_constant(env, lp, which):
     return tuple(inout_list)
 
 def getindconstrindex(env, lp, name, enc=default_encoding):
-    index = CR.intPtr()
-    status = CR.CPXXgetindconstrindex(env, lp, cpx_decode_noop3(name, enc), index)
-    check_status(env, status)
-    return index.value()
+    indexfn = CR.CPXXgetindconstrindex
+    return _getindex(env, lp, name, enc, indexfn)
 
 def delindconstrs(env, lp, begin, end):
-    status = CR.CPXXdelindconstrs(env, lp, begin, end)
-    check_status(env, status)
-    return
-    
+    delfn = CR.CPXXdelindconstrs
+    _delbyrange(delfn, env, lp, begin, end)
+
 def getindconstrslack(env, lp, begin, end):
-    slacklen = end - begin + 1
+    slacklen = _rangelen(begin, end)
     slacks   = _safeDoubleArray(slacklen)
     status   = CR.CPXXgetindconstrslack(env, lp, slacks, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(slacks, slacklen)
+    return LAU.array_to_list(slacks, slacklen)
     
 def getindconstrname(env, lp, which, enc=default_encoding):
-    inoutlist = [0]
-    status = CR.CPXXgetindconstrname(env, lp, inoutlist, which)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inoutlist == [0]:
-        return ""
-    status = CR.CPXXgetindconstrname(env, lp, inoutlist, which)
-    check_status(env, status)
-    return cpx_encode_noop3(inoutlist[0], enc)
+    namefn = CR.CPXXgetindconstrname
+    return _getname(env, lp, which, enc, namefn, index_first=False)
 
+########################################################################
 # Quadratic Constraints
+########################################################################
 
-def addqconstr(env, lp, rhs, sense, linind, linval, quadrow, quadcol, quadval,
-               name, enc=default_encoding):
-    status = CR.CPXXaddqconstr(env, lp, len(linind), len(quadrow), rhs,
-                               cpx_decode(sense, enc),
-                               LAU.int_list_to_array(linind),
-                               LAU.double_list_to_array(linval),
-                               LAU.int_list_to_array(quadrow),
-                               LAU.int_list_to_array(quadcol),
-                               LAU.double_list_to_array(quadval),
-                               cpx_decode_noop3(name, enc))
+def addqconstr(env, lp, rhs, sense, linind, linval, quadrow, quadcol,
+               quadval, name, enc=default_encoding):
+    with LAU.int_c_array(linind) as c_linind, \
+         LAU.double_c_array(linval) as c_linval, \
+         LAU.int_c_array(quadrow) as c_quadrow, \
+         LAU.int_c_array(quadcol) as c_quadcol, \
+         LAU.double_c_array(quadval) as c_quadval:
+        status = CR.CPXXaddqconstr(env, lp, len(linind), len(quadrow),
+                                   rhs, cpx_decode(sense, enc),
+                                   c_linind, c_linval,
+                                   c_quadrow, c_quadcol, c_quadval,
+                                   cpx_decode_noop3(name, enc))
     check_status(env, status)
-    return
 
 def getqconstr_info(env, lp, which):
     inout_list = [0, 0, which]
@@ -1198,51 +1191,258 @@ def getqconstr_quad(env, lp, which):
     return tuple(inout_list[2:]) # slice off the lin info
 
 def delqconstrs(env, lp, begin, end):
-    status = CR.CPXXdelqconstrs(env, lp, begin, end)
-    check_status(env, status)
-    return [0]
+    delfn = CR.CPXXdelqconstrs
+    _delbyrange(delfn, env, lp, begin, end)
 
 def getqconstrindex(env, lp, name, enc=default_encoding):
-    index = CR.intPtr()
-    status = CR.CPXXgetqconstrindex(env, lp, cpx_decode_noop3(name, enc), index)
-    check_status(env, status)
-    return index.value()
+    indexfn = CR.CPXXgetqconstrindex
+    return _getindex(env, lp, name, enc, indexfn)
 
 def getqconstrslack(env, lp, begin, end):
-    slacklen = end - begin + 1
+    slacklen = _rangelen(begin, end)
     slacks   = _safeDoubleArray(slacklen)
     status   = CR.CPXXgetqconstrslack(env, lp, slacks, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(slacks, slacklen)
+    return LAU.array_to_list(slacks, slacklen)
 
 def getqconstrname(env, lp, which, enc=default_encoding):
+    namefn = CR.CPXXgetqconstrname
+    return _getname(env, lp, which, enc, namefn, index_first=False)
+
+########################################################################
+# Generic helper methods
+########################################################################
+
+def _delbyrange(delfn, env, lp, begin, end=None):
+    if end is None:
+        end = begin
+    status = delfn(env, lp, begin, end)
+    check_status(env, status)
+
+def _getindex(env, lp, name, enc, indexfn):
+    idx = CR.intPtr()
+    status = indexfn(env, lp, cpx_decode_noop3(name, enc), idx)
+    check_status(env, status)
+    return idx.value()
+
+def _getname(env, lp, idx, enc, namefn, index_first=True):
+    # Some name functions have the index argument first and some have it
+    # last.  Thus, we do this little dance, so things are called in the
+    # right way depending on index_first.
+    def _namefn(env, lp, idx, inoutlist):
+        if index_first:
+            return namefn(env, lp, idx, inoutlist)
+        else:
+            return namefn(env, lp, inoutlist, idx)
     inoutlist = [0]
-    status = CR.CPXXgetqconstrname(env, lp, inoutlist, which)
+    # NB: inoutlist will be modified as a side effect
+    status = _namefn(env, lp, idx, inoutlist)
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     if inoutlist == [0]:
-        return ""
-    status = CR.CPXXgetqconstrname(env, lp, inoutlist, which)
+        return None
+    status = _namefn(env, lp, idx, inoutlist)
     check_status(env, status)
     return cpx_encode_noop3(inoutlist[0], enc)
 
-    
-# Objective
+def _getnamebyrange(env, lp, begin, end, enc, namefn):
+    # FIXME: See RTC-31484.
+    if end < begin:
+        return []
+    inout_list = [0, begin, end]
+    status = namefn(env, lp, inout_list)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    if inout_list == [0]:
+        return [None] * _rangelen(begin, end)
+    inout_list.extend([begin, end])
+    status = namefn(env, lp, inout_list)
+    check_status(env, status)
+    return [cpx_encode_noop3(x, enc) for x in inout_list]
+
+def _getnamesingle(env, lp, enc, namefn):
+    inoutlist = [0]
+    status = namefn(env, lp, inoutlist)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    if inoutlist == [0]:
+        return None
+    status = namefn(env, lp, inoutlist)
+    check_status(env, status)
+    return cpx_encode_noop3(inoutlist[0], enc)
+
+########################################################################
+# Annotation API
+########################################################################
+
+def _newanno(env, lp, name, defval, newfn):
+    status = newfn(env, lp, name, defval)
+    check_status(env, status)
+
+def newlonganno(env, lp, name, defval, enc=default_encoding):
+    newfn = CR.CPXXnewlongannotation
+    _newanno(env, lp, cpx_decode_noop3(name, enc), defval, newfn)
+
+def newdblanno(env, lp, name, defval, enc=default_encoding):
+    newfn = CR.CPXXnewdblannotation
+    _newanno(env, lp, cpx_decode_noop3(name, enc), defval, newfn)
+
+def dellonganno(env, lp, begin, end):
+    delfn = CR.CPXXdellongannotations
+    _delbyrange(delfn, env, lp, begin, end)
+
+def deldblanno(env, lp, begin, end):
+    delfn = CR.CPXXdeldblannotations
+    _delbyrange(delfn, env, lp, begin, end)
+
+def getlongannoindex(env, lp, name, enc=default_encoding):
+    indexfn = CR.CPXXgetlongannotationindex
+    return _getindex(env, lp, name, enc, indexfn)
+
+def getdblannoindex(env, lp, name, enc=default_encoding):
+    indexfn = CR.CPXXgetdblannotationindex
+    return _getindex(env, lp, name, enc, indexfn)
+
+def getlongannoname(env, lp, idx, enc=default_encoding):
+    namefn = CR.CPXXgetlongannotationname
+    return _getname(env, lp, idx, enc, namefn)
+
+def getdblannoname(env, lp, idx, enc=default_encoding):
+    namefn = CR.CPXXgetdblannotationname
+    return _getname(env, lp, idx, enc, namefn)
+
+def getnumlonganno(env, lp):
+    return CR.CPXXgetnumlongannotations(env, lp)
+
+def getnumdblanno(env, lp):
+    return CR.CPXXgetnumdblannotations(env, lp)
+
+def getlongannodefval(env, lp, idx):
+    defval = CR.cpxlongPtr()
+    status = CR.CPXXgetlongannotationdefval(env, lp, idx, defval)
+    check_status(env, status)
+    return int(defval.value())
+
+def getdblannodefval(env, lp, idx):
+    defval = CR.doublePtr()
+    status = CR.CPXXgetdblannotationdefval(env, lp, idx, defval)
+    check_status(env, status)
+    return defval.value()
+
+def setlonganno(env, lp, idx, objtype, ind, val):
+    assert len(ind) == len(val)
+    cnt = len(ind)
+    status = CR.CPXXsetlongannotations(env, lp, idx, objtype, cnt,
+                                       LAU.int_list_to_array(ind),
+                                       LAU.long_list_to_array(val))
+    check_status(env, status)
+
+def setdblanno(env, lp, idx, objtype, ind, val):
+    assert len(ind) == len(val)
+    cnt = len(ind)
+    status = CR.CPXXsetdblannotations(env, lp, idx, objtype, cnt,
+                                      LAU.int_list_to_array(ind),
+                                      LAU.double_list_to_array(val))
+    check_status(env, status)
+
+def getlonganno(env, lp, idx, objtype, begin, end):
+    annolen = _rangelen(begin, end)
+    val = _safeLongArray(annolen)
+    status = CR.CPXXgetlongannotations(env, lp, idx, objtype, val,
+                                       begin, end)
+    check_status(env, status)
+    return [int(i) for i in LAU.array_to_list(val, annolen)]
+
+def getdblanno(env, lp, idx, objtype, begin, end):
+    annolen = _rangelen(begin, end)
+    val = _safeDoubleArray(annolen)
+    status = CR.CPXXgetdblannotations(env, lp, idx, objtype, val,
+                                      begin, end)
+    check_status(env, status)
+    return LAU.array_to_list(val, annolen)
+
+def readcopyanno(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopyannotations(env, lp,
+                                        cpx_decode_noop3(filename, enc))
+    check_status(env, status)
+
+def writeanno(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXwriteannotations(env, lp,
+                                     cpx_decode_noop3(filename, enc))
+    check_status(env, status)
+
+def writebendersanno(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXwritebendersannotation(env, lp,
+                                           cpx_decode_noop3(filename, enc))
+    check_status(env, status)
+
+########################################################################
+# PWL API
+########################################################################
+
+def addpwl(env, lp, vary, varx, preslope, postslope, nbreaks,
+           breakx, breaky, name, enc=default_encoding):
+    assert len(breakx) == nbreaks
+    assert len(breaky) == nbreaks
+    with LAU.double_c_array(breakx) as c_breakx, \
+         LAU.double_c_array(breaky) as c_breaky:
+        status = CR.CPXXaddpwl(env, lp, vary, varx, preslope, postslope,
+                               nbreaks, c_breakx, c_breaky,
+                               cpx_decode_noop3(name, enc))
+    check_status(env, status)
+
+def delpwl(env, lp, begin, end):
+    delfn = CR.CPXXdelpwl
+    _delbyrange(delfn, env, lp, begin, end)
+
+def getnumpwl(env, lp):
+    return CR.CPXXgetnumpwl(env, lp)
+
+def getpwl(env, lp, idx):
+    # Initially, the inout_list contains the pwlindex and breakspace args
+    # to CPXXgetpwl.  We use zero (0) for breakspace to query the
+    # surplus.
+    inout_list = [idx, 0]
+    status = CR.CPXXgetpwl(env, lp, inout_list)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    # We expect to get [vary, varx, preslope, postslope, surplus]
+    assert len(inout_list) == 5
+    vary, varx, preslope, postslope, surplus = inout_list
+    # FIXME: Should we assert surplus is > 0?
+    inout_list = [idx, surplus]
+    status = CR.CPXXgetpwl(env, lp, inout_list)
+    check_status(env, status)
+    # We expect to get [breakx, breaky]
+    assert len(inout_list) == 2
+    breakx, breaky = inout_list
+    return [vary, varx, preslope, postslope, breakx, breaky]
+
+def getpwlindex(env, lp, name, enc=default_encoding):
+    indexfn = CR.CPXXgetpwlindex
+    return _getindex(env, lp, name, enc, indexfn)
+
+def getpwlname(env, lp, idx, enc=default_encoding):
+    namefn = CR.CPXXgetpwlname
+    return _getname(env, lp, idx, enc, namefn, index_first=False)
+
+########################################################################
+# Objective API
+########################################################################
 
 def copyobjname(env, lp, objname, enc=default_encoding):
     status = CR.CPXXcopyobjname(env, lp, objname)
     check_status(env, status)
-    return
 
 def chgobj(env, lp, indices, values):
-    status = CR.CPXXchgobj(env, lp, len(indices), LAU.int_list_to_array(indices), LAU.double_list_to_array(values))
+    with LAU.int_c_array(indices) as c_ind, \
+         LAU.double_c_array(values) as c_val:
+        status = CR.CPXXchgobj(env, lp, len(indices), c_ind, c_val)
     check_status(env, status)
-    return
 
 def chgobjsen(env, lp, maxormin):
     status = CR.CPXXchgobjsen(env, lp, maxormin)
     check_status(env, status)
-    return
 
 def getobjsen(env, lp):
     return CR.CPXXgetobjsen(env, lp)
@@ -1258,63 +1458,63 @@ def chgobjoffset(env, lp, offset):
     check_status(env, status)
 
 def getobj(env, lp, begin, end):
-    objlen = end - begin + 1
+    objlen = _rangelen(begin, end)
     obj    = _safeDoubleArray(objlen)
     status = CR.CPXXgetobj(env, lp, obj, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(obj, objlen)
+    return LAU.array_to_list(obj, objlen)
 
 def getobjname(env, lp, enc=default_encoding):
-    inoutlist = [0]
-    status = CR.CPXXgetobjname(env, lp, inoutlist)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inoutlist == [0]:
-        return ""
-    status = CR.CPXXgetobjname(env, lp, inoutlist)
-    check_status(env, status)
-    return inoutlist[0]
+    namefn = CR.CPXXgetobjname
+    return _getnamesingle(env, lp, enc, namefn)
 
 def copyquad(env, lp, qmatbeg, qmatind, qmatval):
-    qmatcnt = [qmatbeg[i+1] - qmatbeg[i] for i in range(len(qmatbeg) - 1)]
-    qmatcnt.append(len(qmatind) - qmatbeg[-1])
-    status = CR.CPXXcopyquad(env, lp, LAU.int_list_to_array(qmatbeg), LAU.int_list_to_array(qmatcnt),
-                            LAU.int_list_to_array(qmatind), LAU.double_list_to_array(qmatval))
+    if len(qmatbeg) > 0:
+        qmatcnt = [qmatbeg[i+1] - qmatbeg[i]
+                   for i in range(len(qmatbeg) - 1)]
+        qmatcnt.append(len(qmatind) - qmatbeg[-1])
+    else:
+        qmatcnt = []
+    with LAU.int_c_array(qmatbeg) as c_qmatbeg, \
+         LAU.int_c_array(qmatcnt) as c_qmatcnt, \
+         LAU.int_c_array(qmatind) as c_qmatind, \
+         LAU.double_c_array(qmatval) as c_qmatval:
+        status = CR.CPXXcopyquad(env, lp, c_qmatbeg, c_qmatcnt,
+                                 c_qmatind, c_qmatval)
     check_status(env, status)
-    return
 
 def copyqpsep(env, lp, qsepvec):
-    status = CR.CPXXcopyqpsep(env, lp, LAU.double_list_to_array(qsepvec))
+    with LAU.double_c_array(qsepvec) as c_qsepvec:
+        status = CR.CPXXcopyqpsep(env, lp, c_qsepvec)
     check_status(env, status)
-    return    
 
 def chgqpcoef(env, lp, row, col, value):
     status = CR.CPXXchgqpcoef(env, lp, row, col, value)
     check_status(env, status)
-    return    
-    
+
 def getquad(env, lp, begin, end):
     nzcnt   = CR.intPtr()
-    ncols   = end - begin + 1
+    ncols   = _rangelen(begin, end)
     qmatbeg = _safeIntArray(ncols)
     qmatind = LAU.int_list_to_array([])
     qmatval = LAU.double_list_to_array([])
     space   = 0
     surplus = CR.intPtr()
-    status = CR.CPXXgetquad(env, lp, nzcnt, qmatbeg, qmatind, qmatval, space, surplus, begin, end)
+    status = CR.CPXXgetquad(env, lp, nzcnt, qmatbeg, qmatind, qmatval,
+                            space, surplus, begin, end)
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     if surplus.value() == 0:
-        return []
+        return ([], [], [])
     space = -surplus.value()
     qmatind = _safeIntArray(space)
     qmatval = _safeDoubleArray(space)
     status = CR.CPXXgetquad(env, lp, nzcnt, qmatbeg, qmatind, qmatval,
                             space, surplus, begin, end)
     check_status(env, status)
-    return (LAU.int_array_to_list(qmatbeg, ncols),
-            LAU.int_array_to_list(qmatind, space),
-            LAU.double_array_to_list(qmatval, space))
+    return (LAU.array_to_list(qmatbeg, ncols),
+            LAU.array_to_list(qmatind, space),
+            LAU.array_to_list(qmatval, space))
 
 def getqpcoef(env, lp, row, col):
     val = CR.doublePtr()
@@ -1356,11 +1556,11 @@ def getobjval(env, lp):
     return objval.value()
 
 def getx(env, lp, begin, end):
-    xlen = end - begin + 1
+    xlen = _rangelen(begin, end)
     x    = _safeDoubleArray(xlen)
     status = CR.CPXXgetx(env, lp, x, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 def getnumcores(env):
     numcores = CR.intPtr()
@@ -1369,39 +1569,39 @@ def getnumcores(env):
     return numcores.value()
 
 def getax(env, lp, begin, end):
-    axlen = end - begin + 1
+    axlen = _rangelen(begin, end)
     ax    = _safeDoubleArray(axlen)
     status = CR.CPXXgetax(env, lp, ax, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(ax, axlen)
+    return LAU.array_to_list(ax, axlen)
 
 def getxqxax(env, lp, begin, end):
-    qaxlen = end - begin + 1
+    qaxlen = _rangelen(begin, end)
     qax    = _safeDoubleArray(qaxlen)
     status = CR.CPXXgetxqxax(env, lp, qax, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(qax, qaxlen)
+    return LAU.array_to_list(qax, qaxlen)
 
 def getpi(env, lp, begin, end):
-    pilen = end - begin + 1
+    pilen = _rangelen(begin, end)
     pi    = _safeDoubleArray(pilen)
     status = CR.CPXXgetpi(env, lp, pi, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(pi, pilen)
+    return LAU.array_to_list(pi, pilen)
 
 def getslack(env, lp, begin, end):
-    slacklen = end - begin + 1
+    slacklen = _rangelen(begin, end)
     slack    = _safeDoubleArray(slacklen)
     status = CR.CPXXgetslack(env, lp, slack, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(slack, slacklen)
+    return LAU.array_to_list(slack, slacklen)
 
 def getdj(env, lp, begin, end):
-    djlen = end - begin + 1
+    djlen = _rangelen(begin, end)
     dj    = _safeDoubleArray(djlen)
     status = CR.CPXXgetdj(env, lp, dj, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(dj, djlen)
+    return LAU.array_to_list(dj, djlen)
 
 def getqconstrdslack(env, lp, qind):
     inout_list = [0, qind]
@@ -1419,44 +1619,44 @@ def getqconstrdslack(env, lp, qind):
 # Infeasibility
 
 def getrowinfeas(env, lp, x, begin, end):
-    infeasoutlen = end - begin + 1
+    infeasoutlen = _rangelen(begin, end)
     infeasout    = _safeDoubleArray(infeasoutlen)
     status = CR.CPXXgetrowinfeas(env, lp, LAU.double_list_to_array(x),
                                  infeasout, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(infeasout, infeasoutlen)
+    return LAU.array_to_list(infeasout, infeasoutlen)
 
 def getcolinfeas(env, lp, x, begin, end):
-    infeasoutlen = end - begin + 1
+    infeasoutlen = _rangelen(begin, end)
     infeasout    = _safeDoubleArray(infeasoutlen)
     status = CR.CPXXgetcolinfeas(env, lp, LAU.double_list_to_array(x),
                                  infeasout, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(infeasout, infeasoutlen)
+    return LAU.array_to_list(infeasout, infeasoutlen)
 
 def getqconstrinfeas(env, lp, x, begin, end):
-    infeasoutlen = end - begin + 1
+    infeasoutlen = _rangelen(begin, end)
     infeasout    = _safeDoubleArray(infeasoutlen)
     status = CR.CPXXgetqconstrinfeas(env, lp, LAU.double_list_to_array(x),
                                      infeasout, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(infeasout, infeasoutlen)
+    return LAU.array_to_list(infeasout, infeasoutlen)
 
 def getindconstrinfeas(env, lp, x, begin, end):
-    infeasoutlen = end - begin + 1
+    infeasoutlen = _rangelen(begin, end)
     infeasout    = _safeDoubleArray(infeasoutlen)
     status = CR.CPXXgetindconstrinfeas(env, lp, LAU.double_list_to_array(x),
                                        infeasout, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(infeasout, infeasoutlen)
+    return LAU.array_to_list(infeasout, infeasoutlen)
 
 def getsosinfeas(env, lp, x, begin, end):
-    infeasoutlen = end - begin + 1
+    infeasoutlen = _rangelen(begin, end)
     infeasout    = _safeDoubleArray(infeasoutlen)
     status = CR.CPXXgetsosinfeas(env, lp, LAU.double_list_to_array(x),
                                  infeasout, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(infeasout, infeasoutlen)
+    return LAU.array_to_list(infeasout, infeasoutlen)
 
 # Basis
 
@@ -1466,7 +1666,7 @@ def getbase_c(env, lp):
     rstat   = LAU.int_list_to_array([])
     status = CR.CPXXgetbase(env, lp, cstat, rstat)
     check_status(env, status)
-    return LAU.int_array_to_list(cstat, numcols)
+    return LAU.array_to_list(cstat, numcols)
 
 def getbase_r(env, lp):
     numrows = CR.CPXXgetnumrows(env, lp)
@@ -1474,7 +1674,7 @@ def getbase_r(env, lp):
     rstat   = _safeIntArray(numrows)
     status = CR.CPXXgetbase(env, lp, cstat, rstat)
     check_status(env, status)
-    return LAU.int_array_to_list(cstat, numrows)
+    return LAU.array_to_list(rstat, numrows)
 
 def getbase(env, lp):
     numcols = CR.CPXXgetnumcols(env, lp)
@@ -1483,7 +1683,8 @@ def getbase(env, lp):
     rstat   = _safeIntArray(numrows)
     status = CR.CPXXgetbase(env, lp, cstat, rstat)
     check_status(env, status)
-    return (LAU.int_array_to_list(cstat, numcols), LAU.int_array_to_list(rstat, numrows))
+    return (LAU.array_to_list(cstat, numcols),
+            LAU.array_to_list(rstat, numrows))
 
 def getbhead(env, lp):
     headlen = CR.CPXXgetnumrows(env, lp)
@@ -1491,13 +1692,12 @@ def getbhead(env, lp):
     x       = _safeDoubleArray(headlen)
     status  = CR.CPXXgetbhead(env, lp, head, x)
     check_status(env, status)
-    return (LAU.int_array_to_list(head, headlen),
-            LAU.double_array_to_list(x, headlen))
+    return (LAU.array_to_list(head, headlen),
+            LAU.array_to_list(x, headlen))
 
-def mbasewrite(env, lp, filename):
-    status = CR.CPXXmbasewrite(env, lp, filename)
+def mbasewrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXmbasewrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 def getijrow(env, lp, i, row_or_column):
     row = CR.intPtr()
@@ -1519,8 +1719,8 @@ def getpnorms(env, lp):
     length  = CR.intPtr()
     status  = CR.CPXXgetpnorms(env, lp, cnorm, rnorm, length)
     check_status(env, status)
-    return (LAU.double_array_to_list(cnorm, length.value()),
-            LAU.double_array_to_list(rnorm, numrows))
+    return (LAU.array_to_list(cnorm, length.value()),
+            LAU.array_to_list(rnorm, numrows))
 
 def getdnorms(env, lp):
     numrows = CR.CPXXgetnumrows(env, lp)
@@ -1529,8 +1729,8 @@ def getdnorms(env, lp):
     length  = CR.intPtr()
     status  = CR.CPXXgetdnorms(env, lp, norm, head, length)
     check_status(env, status)
-    return (LAU.double_array_to_list(norm, length.value()),
-            LAU.int_array_to_list(head, length.value()))
+    return (LAU.array_to_list(norm, length.value()),
+            LAU.array_to_list(head, length.value()))
 
 def getbasednorms(env, lp):
     numcols = CR.CPXXgetnumcols(env, lp)
@@ -1540,9 +1740,9 @@ def getbasednorms(env, lp):
     dnorm   = _safeDoubleArray(numrows)
     status = CR.CPXXgetbasednorms(env, lp, cstat, rstat, dnorm)
     check_status(env, status)
-    return (LAU.int_array_to_list(cstat, numcols),
-            LAU.int_array_to_list(rstat, numrows),
-            LAU.double_array_to_list(dnorm, numrows))
+    return (LAU.array_to_list(cstat, numcols),
+            LAU.array_to_list(rstat, numrows),
+            LAU.array_to_list(dnorm, numrows))
 
 def getpsbcnt(env, lp):
     return CR.CPXXgetpsbcnt(env, lp)
@@ -1571,7 +1771,7 @@ def getintquality(env, lp, what):
 # Sensitivity Analysis Results 
 
 def boundsa_lower(env, lp, begin, end):
-    listlen = end - begin + 1
+    listlen = _rangelen(begin, end)
     lblower = _safeDoubleArray(listlen)
     lbupper = _safeDoubleArray(listlen)
     ublower = LAU.double_list_to_array([])
@@ -1579,11 +1779,11 @@ def boundsa_lower(env, lp, begin, end):
     status = CR.CPXXboundsa(env, lp, begin, end, lblower, lbupper,
                             ublower, ubupper)
     check_status(env, status)
-    return (LAU.double_array_to_list(lblower, listlen),
-            LAU.double_array_to_list(lbupper, listlen))
+    return (LAU.array_to_list(lblower, listlen),
+            LAU.array_to_list(lbupper, listlen))
 
 def boundsa_upper(env, lp, begin, end):
-    listlen = end - begin + 1
+    listlen = _rangelen(begin, end)
     lblower = LAU.double_list_to_array([])
     lbupper = LAU.double_list_to_array([])
     ublower = _safeDoubleArray(listlen)
@@ -1591,11 +1791,11 @@ def boundsa_upper(env, lp, begin, end):
     status = CR.CPXXboundsa(env, lp, begin, end, lblower, lbupper,
                             ublower, ubupper)
     check_status(env, status)
-    return (LAU.double_array_to_list(ublower, listlen),
-            LAU.double_array_to_list(ubupper, listlen))
+    return (LAU.array_to_list(ublower, listlen),
+            LAU.array_to_list(ubupper, listlen))
 
 def boundsa(env, lp, begin, end):
-    listlen = end - begin + 1
+    listlen = _rangelen(begin, end)
     lblower = _safeDoubleArray(listlen)
     lbupper = _safeDoubleArray(listlen)
     ublower = _safeDoubleArray(listlen)
@@ -1603,71 +1803,67 @@ def boundsa(env, lp, begin, end):
     status = CR.CPXXboundsa(env, lp, begin, end, lblower, lbupper,
                             ublower, ubupper)
     check_status(env, status)
-    return (LAU.double_array_to_list(lblower, listlen),
-            LAU.double_array_to_list(lbupper, listlen),
-            LAU.double_array_to_list(ublower, listlen),
-            LAU.double_array_to_list(ubupper, listlen))
+    return (LAU.array_to_list(lblower, listlen),
+            LAU.array_to_list(lbupper, listlen),
+            LAU.array_to_list(ublower, listlen),
+            LAU.array_to_list(ubupper, listlen))
 
 def objsa(env, lp, begin, end):
-    listlen = end - begin + 1
+    listlen = _rangelen(begin, end)
     lower   = _safeDoubleArray(listlen)
     upper   = _safeDoubleArray(listlen)
     status = CR.CPXXobjsa(env, lp, begin, end, lower, upper)
     check_status(env, status)
-    return (LAU.double_array_to_list(lower, listlen),
-            LAU.double_array_to_list(upper, listlen))
+    return (LAU.array_to_list(lower, listlen),
+            LAU.array_to_list(upper, listlen))
 
 def rhssa(env, lp, begin, end):
-    listlen = end - begin + 1
+    listlen = _rangelen(begin, end)
     lower   = _safeDoubleArray(listlen)
     upper   = _safeDoubleArray(listlen)
     status = CR.CPXXrhssa(env, lp, begin, end, lower, upper)
     check_status(env, status)
-    return (LAU.double_array_to_list(lower, listlen),
-            LAU.double_array_to_list(upper, listlen))
+    return (LAU.array_to_list(lower, listlen),
+            LAU.array_to_list(upper, listlen))
 
 
 # Conflicts
 
-def refinemipstartconflictext(env, lp, mipstartindex, grppref, grpbeg, grpind,
-                              grptype):
+def refinemipstartconflictext(env, lp, mipstartindex, grppref, grpbeg,
+                              grpind, grptype):
     grpcnt = len(grppref)
     concnt = len(grpind)
-    sigint_swap()
-    status = CR.CPXXrefinemipstartconflictext(
-        env, lp, mipstartindex, grpcnt, concnt,
-        LAU.double_list_to_array(grppref),
-        LAU.int_list_to_array(grpbeg),
-        LAU.int_list_to_array(grpind),
-        grptype)
-    sigint_swap()
+    with SigIntHandler(), \
+         LAU.double_c_array(grppref) as c_grppref, \
+         LAU.int_c_array(grpbeg) as c_grpbeg, \
+         LAU.int_c_array(grpind) as c_grpind:
+        status = CR.CPXXrefinemipstartconflictext(
+            env, lp, mipstartindex, grpcnt, concnt,
+            c_grppref, c_grpbeg, c_grpind, grptype)
     check_status(env, status)
-    return
 
 def refineconflictext(env, lp, grppref, grpbeg, grpind, grptype):
     grpcnt = len(grppref)
     concnt = len(grpind)
-    sigint_swap()
-    status = CR.CPXXrefineconflictext(env, lp, grpcnt, concnt,
-                                      LAU.double_list_to_array(grppref),
-                                      LAU.int_list_to_array(grpbeg),
-                                      LAU.int_list_to_array(grpind),
-                                      grptype)
-    sigint_swap()
+    with SigIntHandler(), \
+         LAU.double_c_array(grppref) as c_grppref, \
+         LAU.int_c_array(grpbeg) as c_grpbeg, \
+         LAU.int_c_array(grpind) as c_grpind:
+        status = CR.CPXXrefineconflictext(
+            env, lp, grpcnt, concnt,
+            c_grppref, c_grpbeg, c_grpind, grptype)
     check_status(env, status)
-    return
 
 def getconflictext(env, lp, begin, end):
-    grpstatlen = end - begin + 1
+    grpstatlen = _rangelen(begin, end)
     grpstat    = _safeIntArray(grpstatlen)
     status = CR.CPXXgetconflictext(env, lp, grpstat, begin, end)
     check_status(env, status)
-    return LAU.int_array_to_list(grpstat, grpstatlen)
+    return LAU.array_to_list(grpstat, grpstatlen)
 
-def clpwrite(env, lp, filename):
-    status = CR.CPXXclpwrite(env, lp, filename)
+def clpwrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXclpwrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 # Problem Modification Routines
 
@@ -1675,10 +1871,9 @@ def clpwrite(env, lp, filename):
 
 # File Writing Routines
 
-def solwrite(env, lp, filename):
-    status = CR.CPXXsolwrite(env, lp, filename)
+def solwrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXsolwrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 # Message Handling Routines
 
@@ -1689,40 +1884,40 @@ def binvcol(env, lp, j):
     x      = _safeDoubleArray(xlen)
     status = CR.CPXXbinvcol(env, lp, j, x)
     check_status(env, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 def binvrow(env, lp, i):
     ylen   = CR.CPXXgetnumrows(env, lp)
     y      = _safeDoubleArray(ylen)
     status = CR.CPXXbinvrow(env, lp, i, y)
     check_status(env, status)
-    return LAU.double_array_to_list(y, ylen)
+    return LAU.array_to_list(y, ylen)
 
 def binvacol(env, lp, j):
     xlen   = CR.CPXXgetnumrows(env, lp)
     x      = _safeDoubleArray(xlen)
     status = CR.CPXXbinvacol(env, lp, j, x)
     check_status(env, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 def binvarow(env, lp, i):
     zlen   = CR.CPXXgetnumcols(env, lp)
     z      = _safeDoubleArray(zlen)
     status = CR.CPXXbinvarow(env, lp, i, z)
     check_status(env, status)
-    return LAU.double_array_to_list(z, zlen)
+    return LAU.array_to_list(z, zlen)
 
 def ftran(env, lp, x):
     x_array = LAU.double_list_to_array(x)
     status = CR.CPXXftran(env, lp, x_array)
     check_status(env, status)
-    return LAU.double_array_to_list(x_array, len(x))
+    return LAU.array_to_list(x_array, len(x))
 
 def btran(env, lp, y):
     y_array = LAU.double_list_to_array(y)
     status = CR.CPXXbtran(env, lp, y_array)
     check_status(env, status)
-    return LAU.double_array_to_list(y_array, len(y))
+    return LAU.array_to_list(y_array, len(y))
 
 
 # Advanced Solution functions
@@ -1733,15 +1928,15 @@ def getgrad(env, lp, j):
     y       = _safeDoubleArray(numrows)
     status = CR.CPXXgetgrad(env, lp, j, head, y)
     check_status(env, status)
-    return (LAU.int_array_to_list(head, numrows),
-            LAU.double_array_to_list(y, numrows))
+    return (LAU.array_to_list(head, numrows),
+            LAU.array_to_list(y, numrows))
 
 def slackfromx(env, lp, x):
     numrows = CR.CPXXgetnumrows(env, lp)
     slack   = _safeDoubleArray(numrows)
     status  = CR.CPXXslackfromx(env, lp, LAU.double_list_to_array(x), slack)
     check_status(env, status)
-    return (LAU.double_array_to_list(slack, numrows))
+    return (LAU.array_to_list(slack, numrows))
 
 def qconstrslackfromx(env, lp, x):
     numqcon = CR.CPXXgetnumqconstrs(env, lp)
@@ -1749,14 +1944,14 @@ def qconstrslackfromx(env, lp, x):
     status  = CR.CPXXqconstrslackfromx(env, lp,
                                        LAU.double_list_to_array(x), slack)
     check_status(env, status)
-    return (LAU.double_array_to_list(slack, numqcon))
+    return (LAU.array_to_list(slack, numqcon))
 
 def djfrompi(env, lp, pi):
     numcols = CR.CPXXgetnumcols(env, lp)
     dj      = _safeDoubleArray(numcols)
     status  = CR.CPXXdjfrompi(env, lp, LAU.double_list_to_array(pi), dj)
     check_status(env, status)
-    return (LAU.double_array_to_list(dj, numcols))
+    return (LAU.array_to_list(dj, numcols))
 
 def qpdjfrompi(env, lp, pi, x):
     numcols = CR.CPXXgetnumcols(env, lp)
@@ -1764,7 +1959,7 @@ def qpdjfrompi(env, lp, pi, x):
     status  = CR.CPXXqpdjfrompi(env, lp, LAU.double_list_to_array(pi),
                                LAU.double_list_to_array(x), dj)
     check_status(env, status)
-    return (LAU.double_array_to_list(dj, numcols))
+    return (LAU.array_to_list(dj, numcols))
 
 def mdleave(env, lp, goodlist):
     goodlen   = len(goodlist)
@@ -1773,15 +1968,15 @@ def mdleave(env, lp, goodlist):
     status = CR.CPXXmdleave(env, lp, LAU.int_list_to_array(goodlist),
                             goodlen, downratio, upratio)
     check_status(env, status)
-    return (LAU.double_array_to_list(downratio, goodlen),
-            LAU.double_array_to_list(upratio, goodlen))
+    return (LAU.array_to_list(downratio, goodlen),
+            LAU.array_to_list(upratio, goodlen))
 
 def qpindefcertificate(env, lp):
     certlen = CR.CPXXgetnumquad(env, lp)
     cert    = _safeDoubleArray(certlen)
     status  = CR.CPXXqpindefcertificate(env, lp, cert)
     check_status(env, status)
-    return LAU.double_array_to_list(cert, certlen)
+    return LAU.array_to_list(cert, certlen)
 
 def dualfarkas(env, lp):
     ylen   = CR.CPXXgetnumrows(env, lp)
@@ -1789,7 +1984,7 @@ def dualfarkas(env, lp):
     proof  = CR.doublePtr()
     status = CR.CPXXdualfarkas(env, lp, y, proof)
     check_status(env, status)
-    return (LAU.double_array_to_list(y, ylen), proof.value())
+    return (LAU.array_to_list(y, ylen), proof.value())
 
 def getijdiv(env, lp):
     idiv = CR.intPtr()
@@ -1808,7 +2003,7 @@ def getray(env, lp):
     z      = _safeDoubleArray(zlen)
     status = CR.CPXXgetray(env, lp, z)
     check_status(env, status)
-    return LAU.double_array_to_list(z, zlen)
+    return LAU.array_to_list(z, zlen)
 
 
 
@@ -1817,12 +2012,10 @@ def getray(env, lp):
 def presolve(env, lp, method):
     status = CR.CPXXpresolve(env, lp, method)
     check_status(env, status)
-    return
 
 def freepresolve(env, lp):
     status  = CR.CPXXfreepresolve(env, lp)
     check_status(env, status)
-    return
 
 def crushx(env, lp, x):
     redlp  = CR.CPXLPptrPtr()
@@ -1834,14 +2027,14 @@ def crushx(env, lp, x):
     prex    = _safeDoubleArray(numcols)
     status  = CR.CPXXcrushx(env, lp, LAU.double_list_to_array(x), prex)
     check_status(env, status)
-    return LAU.double_array_to_list(prex, numcols)
+    return LAU.array_to_list(prex, numcols)
 
 def uncrushx(env, lp, prex):
     numcols = CR.CPXXgetnumcols(env, lp)
     x       = _safeDoubleArray(numcols)
     status  = CR.CPXXuncrushx(env, lp, x, LAU.double_list_to_array(prex))
     check_status(env, status)
-    return LAU.double_array_to_list(x, numcols)
+    return LAU.array_to_list(x, numcols)
 
 
 def crushpi(env, lp, pi):
@@ -1854,14 +2047,14 @@ def crushpi(env, lp, pi):
     prepi    = _safeDoubleArray(numrows)
     status  = CR.CPXXcrushpi(env, lp, LAU.double_list_to_array(pi), prepi)
     check_status(env, status)
-    return LAU.double_array_to_list(prepi, numrows)
+    return LAU.array_to_list(prepi, numrows)
 
 def uncrushpi(env, lp, prepi):
     numrows = CR.CPXXgetnumrows(env, lp)
     pi      = _safeDoubleArray(numrows)
     status  = CR.CPXXuncrushpi(env, lp, pi, LAU.double_list_to_array(prepi))
     check_status(env, status)
-    return LAU.double_array_to_list(pi, numrows)
+    return LAU.array_to_list(pi, numrows)
 
 def crushform(env, lp, ind, val):
     plen    = CR.intPtr()
@@ -1879,8 +2072,8 @@ def crushform(env, lp, ind, val):
                                LAU.double_list_to_array(val),
                                plen, poffset, pind, pval)
     check_status(env, status)
-    return (poffset.value(), LAU.int_array_to_list(pind, plen.value()),
-            LAU.double_array_to_list(pval, plen.value()))
+    return (poffset.value(), LAU.array_to_list(pind, plen.value()),
+            LAU.array_to_list(pval, plen.value()))
     
 
 def uncrushform(env, lp, pind, pval):
@@ -1894,8 +2087,8 @@ def uncrushform(env, lp, pind, pval):
                                 LAU.double_list_to_array(pval),
                                 length, offset, ind, val)
     check_status(env, status)
-    return (offset.value(), LAU.int_array_to_list(ind, length.value()),
-            LAU.double_array_to_list(val, length.value()))
+    return (offset.value(), LAU.array_to_list(ind, length.value()),
+            LAU.array_to_list(val, length.value()))
 
 def getprestat_status(env, lp):
     redlp   = CR.CPXLPptrPtr()
@@ -1908,7 +2101,8 @@ def getprestat_status(env, lp):
     prstat  = LAU.int_list_to_array([])
     ocstat  = LAU.int_list_to_array([])
     orstat  = LAU.int_list_to_array([])
-    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat, ocstat, orstat)
+    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat,
+                                ocstat, orstat)
     check_status(env, status)
     return prestat.value()
 
@@ -1924,9 +2118,10 @@ def getprestat_r(env, lp):
     prstat  = _safeIntArray(nrows)
     ocstat  = LAU.int_list_to_array([])
     orstat  = LAU.int_list_to_array([])
-    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat, ocstat, orstat)
+    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat,
+                                ocstat, orstat)
     check_status(env, status)
-    return LAU.int_array_to_list(prstat, nrows)
+    return LAU.array_to_list(prstat, nrows)
 
 def getprestat_c(env, lp):
     redlp   = CR.CPXLPptrPtr()
@@ -1940,9 +2135,10 @@ def getprestat_c(env, lp):
     prstat  = LAU.int_list_to_array([])
     ocstat  = LAU.int_list_to_array([])
     orstat  = LAU.int_list_to_array([])
-    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat, ocstat, orstat)
+    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat,
+                                ocstat, orstat)
     check_status(env, status)
-    return LAU.int_array_to_list(pcstat, ncols)
+    return LAU.array_to_list(pcstat, ncols)
 
 def getprestat_or(env, lp):
     redlp   = CR.CPXLPptrPtr()
@@ -1956,9 +2152,10 @@ def getprestat_or(env, lp):
     prstat  = LAU.int_list_to_array([])
     ocstat  = LAU.int_list_to_array([])
     orstat  = _safeIntArray(nprows)
-    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat, ocstat, orstat)
+    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat,
+                                ocstat, orstat)
     check_status(env, status)
-    return LAU.int_array_to_list(orstat, nprows)
+    return LAU.array_to_list(orstat, nprows)
 
 def getprestat_oc(env, lp):
     redlp   = CR.CPXLPptrPtr()
@@ -1972,15 +2169,16 @@ def getprestat_oc(env, lp):
     prstat  = LAU.int_list_to_array([])
     ocstat  = _safeIntArray(npcols)
     orstat  = LAU.int_list_to_array([])
-    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat, ocstat, orstat)
+    status  = CR.CPXXgetprestat(env, lp, prestat, pcstat, prstat,
+                                ocstat, orstat)
     check_status(env, status)
-    return LAU.int_array_to_list(ocstat, npcols)
+    return LAU.array_to_list(ocstat, npcols)
 
 def prechgobj(env, lp, ind, val):
-    status = CR.CPXXprechgobj(env, lp, len(ind), LAU.int_list_to_array(ind),
-                             LAU.double_list_to_array(val))
+    status = CR.CPXXprechgobj(env, lp, len(ind),
+                              LAU.int_list_to_array(ind),
+                              LAU.double_list_to_array(val))
     check_status(env, status)
-    return
 
 def preaddrows(env, lp, rhs, sense, rmatbeg, rmatind, rmatval, names,
                enc=default_encoding):
@@ -1992,38 +2190,143 @@ def preaddrows(env, lp, rhs, sense, rmatbeg, rmatind, rmatval, names,
                                LAU.double_list_to_array(rmatval),
                                [cpx_decode(x, enc) for x in names])
     check_status(env, status)
-    return
 
+########################################################################
+# MIP Starts API
+########################################################################
 
-# Copying Data
+def getnummipstarts(env, lp):
+    return CR.CPXXgetnummipstarts(env, lp)
 
-def chgmipstarts(env, lp, mipstartindices, beg, varindices, values, effortlevel):
-    status = CR.CPXXchgmipstarts(env, lp, len(mipstartindices), LAU.int_list_to_array(mipstartindices),
-                                len(varindices), LAU.int_list_to_array(beg),
-                                LAU.int_list_to_array(varindices), LAU.double_list_to_array(values),
-                                LAU.int_list_to_array(effortlevel))
+def chgmipstarts(env, lp, mipstartindices, beg, varindices, values,
+                 effortlevel):
+    with LAU.int_c_array(mipstartindices) as c_mipstartindices, \
+         LAU.int_c_array(beg) as c_beg, \
+         LAU.int_c_array(varindices) as c_varindices, \
+         LAU.double_c_array(values) as c_values, \
+         LAU.int_c_array(effortlevel) as c_effortlevel:
+        status = CR.CPXXchgmipstarts(env, lp,
+                                     len(mipstartindices),
+                                     c_mipstartindices,
+                                     len(varindices),
+                                     c_beg,
+                                     c_varindices,
+                                     c_values,
+                                     c_effortlevel)
     check_status(env, status)
-    return
-    
 
-
-
-
-def addmipstarts(env, lp, beg, varindices, values, effortlevel, mipstartname, enc=default_encoding):
-    status = CR.CPXXaddmipstarts(env, lp, len(beg), len(varindices),
-                                 LAU.int_list_to_array(beg),
-                                 LAU.int_list_to_array(varindices),
-                                 LAU.double_list_to_array(values),
-                                 LAU.int_list_to_array(effortlevel),
-                                 [cpx_decode(x, enc) for x in mipstartname])
+def addmipstarts(env, lp, beg, varindices, values, effortlevel,
+                 mipstartname, enc=default_encoding):
+    with LAU.int_c_array(beg) as c_beg, \
+         LAU.int_c_array(varindices) as c_varindices, \
+         LAU.double_c_array(values) as c_values, \
+         LAU.int_c_array(effortlevel) as c_effortlevel:
+        status = CR.CPXXaddmipstarts(
+            env, lp, len(beg), len(varindices),
+            c_beg, c_varindices, c_values, c_effortlevel,
+            [cpx_decode(x, enc) for x in mipstartname])
     check_status(env, status)
-    return
     
 def delmipstarts(env, lp, begin, end):
-    status = CR.CPXXdelmipstarts(env, lp, begin, end)
+    delfn = CR.CPXXdelmipstarts
+    _delbyrange(delfn, env, lp, begin, end)
+
+def getmipstarts_size(env, lp, begin, end):
+    beglen      = _rangelen(begin, end)
+    beg         = LAU.int_list_to_array([])
+    effortlevel = _safeIntArray(beglen)
+    nzcnt       = CR.intPtr()
+    surplus     = CR.intPtr()
+    varindices  = LAU.int_list_to_array([])
+    values      = LAU.double_list_to_array([])
+    startspace  = 0
+    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
+                                 effortlevel, startspace, surplus, begin,
+                                 end)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    return -surplus.value()
+
+def getmipstarts_effort(env, lp, begin, end):
+    beglen      = _rangelen(begin, end)
+    beg         = LAU.int_list_to_array([])
+    effortlevel = _safeIntArray(beglen)
+    nzcnt       = CR.intPtr()
+    surplus     = CR.intPtr()
+    varindices  = LAU.int_list_to_array([])
+    values      = LAU.double_list_to_array([])
+    startspace  = 0
+    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
+                                 effortlevel, startspace, surplus, begin,
+                                 end)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    if surplus.value() == 0:
+        return ([0]*_rangelen(begin, end), [], [],
+                [0]*_rangelen(begin, end))
+    startspace = -surplus.value()
+    beg         = _safeIntArray(beglen)
+    varindices  = _safeIntArray(startspace)
+    values      = _safeDoubleArray(startspace)
+    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
+                                 effortlevel, startspace, surplus, begin,
+                                 end)
     check_status(env, status)
-    return [0]
-    
+    return LAU.array_to_list(effortlevel, beglen)
+
+def getmipstarts(env, lp, begin, end):
+    beglen      = _rangelen(begin, end)
+    beg         = LAU.int_list_to_array([])
+    effortlevel = _safeIntArray(beglen)
+    nzcnt       = CR.intPtr()
+    surplus     = CR.intPtr()
+    varindices  = LAU.int_list_to_array([])
+    values      = LAU.double_list_to_array([])
+    startspace  = 0
+    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
+                                 effortlevel, startspace, surplus, begin,
+                                 end)
+    if status != CR.CPXERR_NEGATIVE_SURPLUS:
+        check_status(env, status)
+    if surplus.value() == 0:
+        return ([0]*_rangelen(begin, end), [], [],
+                [0]*_rangelen(begin, end))
+    beg         = _safeIntArray(beglen)
+    startspace  = -surplus.value()
+    varindices  = _safeIntArray(startspace)
+    values      = _safeDoubleArray(startspace)
+    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
+                                 effortlevel, startspace, surplus, begin,
+                                 end)
+    check_status(env, status)
+    return (LAU.array_to_list(beg, beglen),
+            LAU.array_to_list(varindices, startspace),
+            LAU.array_to_list(values, startspace),
+            LAU.array_to_list(effortlevel, beglen))
+
+def getmipstartname(env, lp, begin, end, enc=default_encoding):
+    namefn = CR.CPXXgetmipstartname
+    return _getnamebyrange(env, lp, begin, end, enc, namefn)
+
+def getmipstartindex(env, lp, mipstartname, enc=default_encoding):
+    index = CR.intPtr()
+    status = CR.CPXXgetmipstartindex(env, lp,
+                                     cpx_decode_noop3(mipstartname, enc),
+                                     index)
+    check_status(env, status)
+    return index.value()
+
+def readcopymipstarts(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopymipstarts(env, lp,
+                                      cpx_decode_noop3(filename, enc))
+    check_status(env, status)
+
+def writemipstarts(env, lp, filename, begin, end, enc=default_encoding):
+    status = CR.CPXXwritemipstarts(env, lp,
+                                   cpx_decode_noop3(filename, enc),
+                                   begin, end)
+    check_status(env, status)
+
 # Optimizing Problems
 
 # Progress
@@ -2079,7 +2382,7 @@ def getcutoff(env, lp):
     status = CR.CPXXgetcutoff(env, lp, cutoff)
     check_status(env, status)
     return cutoff.value()
-    
+
 def getmiprelgap(env, lp):
     relgap = CR.doublePtr()
     status = CR.CPXXgetmiprelgap(env, lp, relgap)
@@ -2094,108 +2397,9 @@ def getnumcuts(env, lp, cuttype):
 
 def getnodeint(env, lp):
     return CR.CPXXgetnodeint(env, lp)
-    
-# MIP Starts
 
-def getmipstarts_size(env, lp, begin, end):
-    beglen      = end - begin + 1
-    beg         = LAU.int_list_to_array([])
-    effortlevel = _safeIntArray(beglen)
-    nzcnt       = CR.intPtr()
-    surplus     = CR.intPtr()
-    varindices  = LAU.int_list_to_array([])
-    values      = LAU.double_list_to_array([])
-    startspace  = 0
-    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
-                                effortlevel, startspace, surplus, begin, end)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    return -surplus.value()
-
-def getmipstarts_effort(env, lp, begin, end):
-    beglen      = end - begin + 1
-    beg         = LAU.int_list_to_array([])
-    effortlevel = _safeIntArray(beglen)
-    nzcnt       = CR.intPtr()
-    surplus     = CR.intPtr()
-    varindices  = LAU.int_list_to_array([])
-    values      = LAU.double_list_to_array([])
-    startspace  = 0
-    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
-                                effortlevel, startspace, surplus, begin, end)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if surplus.value() == 0:
-        return ([0] * (end - begin + 1), [], [], [0] * (end - begin + 1))
-    startspace = -surplus.value()
-    beg         = _safeIntArray(beglen)
-    varindices  = _safeIntArray(startspace)
-    values      = _safeDoubleArray(startspace)
-    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
-                                effortlevel, startspace, surplus, begin, end)
-    check_status(env, status)
-    return LAU.int_array_to_list(effortlevel, beglen)
-
-def getmipstarts(env, lp, begin, end):
-    beglen      = end - begin + 1
-    beg         = LAU.int_list_to_array([])
-    effortlevel = _safeIntArray(beglen)
-    nzcnt       = CR.intPtr()
-    surplus     = CR.intPtr()
-    varindices  = LAU.int_list_to_array([])
-    values      = LAU.double_list_to_array([])
-    startspace  = 0
-    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
-                                effortlevel, startspace, surplus, begin, end)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if surplus.value() == 0:
-        return ([0] * (end - begin + 1), [], [], [0] * (end - begin + 1))
-    beg         = _safeIntArray(beglen)
-    startspace  = -surplus.value()
-    varindices  = _safeIntArray(startspace)
-    values      = _safeDoubleArray(startspace)
-    status = CR.CPXXgetmipstarts(env, lp, nzcnt, beg, varindices, values,
-                                effortlevel, startspace, surplus, begin, end)
-    check_status(env, status)
-    return (LAU.int_array_to_list(beg, beglen),
-            LAU.int_array_to_list(varindices, startspace),
-            LAU.double_array_to_list(values, startspace),
-            LAU.int_array_to_list(effortlevel, beglen))
-
-def getmipstartname(env, lp, begin, end, enc=default_encoding):
-    inout_list = [0, begin, end]
-    status = CR.CPXXgetmipstartname(env, lp, inout_list)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inout_list == [0]:
-        return [cpx_encode_noop3(x, enc) for x in [""] * (end - begin + 1)]
-    inout_list.extend([begin, end])
-    status = CR.CPXXgetmipstartname(env, lp, inout_list)
-    check_status(env, status)
-    return [cpx_encode_noop3(x, enc) for x in inout_list]
-
-def getmipstartindex(env, lp, mipstartname, enc=default_encoding):
-    index = CR.intPtr()
-    status = CR.CPXXgetmipstartindex(env, lp,
-                                     cpx_decode_noop3(mipstartname, enc),
-                                     index)
-    check_status(env, status)
-    return index.value()
-
-def readcopymipstarts(env, lp, filename):
-    status = CR.CPXXreadcopymipstarts(env, lp, filename)
-    check_status(env, status)
-    return 
-
-def writemipstarts(env, lp, filename, begin, end):
-    status = CR.CPXXwritemipstarts(env, lp, filename, begin, end)
-    check_status(env, status)
-    return 
-    
 def getsubstat(env, lp):
     return CR.CPXXgetsubstat(env, lp)
-
 
 # for callback query methods 
 
@@ -2304,41 +2508,41 @@ def getdettime(env):
     return time.value()
 
 def getcallbackincumbent(cbstruct, begin, end):
-    xlen = end - begin + 1
+    xlen = _rangelen(begin, end)
     x    = _safeDoubleArray(xlen)
     status = CR.CPXXgetcallbackincumbent(cbstruct, x, begin, end)
     check_status(None, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 def getcallbackpseudocosts(cbstruct, begin, end):
-    pclen = end - begin + 1
+    pclen = _rangelen(begin, end)
     uppc  = _safeDoubleArray(pclen)
     dnpc  = _safeDoubleArray(pclen)
     status = CR.CPXXgetcallbackpseudocosts(cbstruct, uppc, dnpc, begin, end)
     check_status(None, status)
-    return (LAU.double_array_to_list(uppc, pclen),
-            LAU.double_array_to_list(dnpc, pclen))
+    return (LAU.array_to_list(uppc, pclen),
+            LAU.array_to_list(dnpc, pclen))
 
 def getcallbacknodeintfeas(cbstruct, begin, end):
-    feaslen = end - begin + 1
+    feaslen = _rangelen(begin, end)
     feas    = _safeIntArray(feaslen)
     status = CR.CPXXgetcallbacknodeintfeas(cbstruct, feas, begin, end)
     check_status(None, status)
-    return LAU.int_array_to_list(feas, feaslen)
+    return LAU.array_to_list(feas, feaslen)
     
 def getcallbacknodelb(cbstruct, begin, end):
-    lblen = end - begin + 1
+    lblen = _rangelen(begin, end)
     lb    = _safeDoubleArray(lblen)
     status = CR.CPXXgetcallbacknodelb(cbstruct, lb, begin, end)
     check_status(None, status)
-    return LAU.double_array_to_list(lb, lblen)
+    return LAU.array_to_list(lb, lblen)
 
 def getcallbacknodeub(cbstruct, begin, end):
-    ublen = end - begin + 1
+    ublen = _rangelen(begin, end)
     ub    = _safeDoubleArray(ublen)
     status = CR.CPXXgetcallbacknodeub(cbstruct, ub, begin, end)
     check_status(None, status)
-    return LAU.double_array_to_list(ub, ublen)
+    return LAU.array_to_list(ub, ublen)
 
 def getcallbacknodeobjval(cbstruct):
     x = CR.doublePtr()
@@ -2347,11 +2551,11 @@ def getcallbacknodeobjval(cbstruct):
     return x.value()
 
 def getcallbacknodex(cbstruct, begin, end):
-    xlen = end - begin + 1
+    xlen = _rangelen(begin, end)
     x    = _safeDoubleArray(xlen)
     status = CR.CPXXgetcallbacknodex(cbstruct, x, begin, end)
     check_status(None, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 
 def getcallbacknodeinfo(cbstruct, node, which):
@@ -2435,7 +2639,6 @@ def cutcallbackadd(cbstruct, rhs, sense, ind, val, purgeable):
                                    LAU.double_list_to_array(val),
                                    purgeable)
     check_status(None, status)
-    return
 
 def cutcallbackaddlocal(cbstruct, rhs, sense, ind, val):
     status = CR.CPXXcutcallbackaddlocal(cbstruct, len(ind), rhs,
@@ -2443,7 +2646,6 @@ def cutcallbackaddlocal(cbstruct, rhs, sense, ind, val):
                                         LAU.int_list_to_array(ind),
                                         LAU.double_list_to_array(val))
     check_status(None, status)
-    return
 
 def branchcallbackbranchgeneral(cbstruct, ind, lu, bd, rhs, sense, matbeg,
                                 matind, matval, nodeest, userhandle):
@@ -2472,15 +2674,10 @@ def branchcallbackbranchasCPLEX(cbstruct, n, userhandle):
 def setpydel(env):
     status = CR.setpydel(env)
     check_status(env, status)
-    return
 
 def delpydel(env):
     status = CR.delpydel(env)
     check_status(env, status)
-    return
-
-def setpyterminate(env):
-    CR.setpyterminate(env)
 
 # Solution pool
 
@@ -2492,7 +2689,6 @@ def addsolnpooldivfilter(env, lp, lb, ub, ind, wts, ref, name,
                                          LAU.double_list_to_array(ref),
                                          cpx_decode_noop3(name, enc))
     check_status(env, status)
-    return
 
 def addsolnpoolrngfilter(env, lp, lb, ub, ind, val, name,
                          enc=default_encoding):
@@ -2501,7 +2697,6 @@ def addsolnpoolrngfilter(env, lp, lb, ub, ind, val, name,
                                          LAU.double_list_to_array(val),
                                          cpx_decode_noop3(name, enc))
     check_status(env, status)
-    return
 
 def getsolnpooldivfilter_constant(env, lp, which):
     lb = CR.doublePtr()
@@ -2512,8 +2707,8 @@ def getsolnpooldivfilter_constant(env, lp, which):
     ind = LAU.int_list_to_array([])
     wts = LAU.double_list_to_array([])
     ref = LAU.double_list_to_array([])
-    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind, wts, ref,
-                                         space, surplus, which)
+    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind,
+                                         wts, ref, space, surplus, which)
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     return (lb.value(), ub.value(), -surplus.value())
@@ -2527,22 +2722,22 @@ def getsolnpooldivfilter(env, lp, which):
     ind = LAU.int_list_to_array([])
     wts = LAU.double_list_to_array([])
     ref = LAU.double_list_to_array([])
-    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind, wts, ref,
-                                        space, surplus, which)
+    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind,
+                                         wts, ref, space, surplus, which)
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     space = -surplus.value()
     ind = _safeIntArray(space)
     wts = _safeDoubleArray(space)
     ref = _safeDoubleArray(space)
-    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind, wts, ref,
-                                        space, surplus, which)
+    status = CR.CPXXgetsolnpooldivfilter(env, lp, lb, ub, nzcnt, ind,
+                                         wts, ref, space, surplus, which)
     check_status(env, status)
     return (lb.value(),
             ub.value(),
-            LAU.int_array_to_list(ind, space),
-            LAU.double_array_to_list(wts, space),
-            LAU.double_array_to_list(ref, space))
+            LAU.array_to_list(ind, space),
+            LAU.array_to_list(wts, space),
+            LAU.array_to_list(ref, space))
 
 def getsolnpoolrngfilter_constant(env, lp, which):
     lb = CR.doublePtr()
@@ -2567,46 +2762,37 @@ def getsolnpoolrngfilter(env, lp, which):
     ind = LAU.int_list_to_array([])
     val = LAU.double_list_to_array([])
     status = CR.CPXXgetsolnpoolrngfilter(env, lp, lb, ub, nzcnt, ind, val,
-                                        space, surplus, which)
+                                         space, surplus, which)
     if status != CR.CPXERR_NEGATIVE_SURPLUS:
         check_status(env, status)
     space = -surplus.value()
     ind = _safeIntArray(space)
     val = _safeDoubleArray(space)
     status = CR.CPXXgetsolnpoolrngfilter(env, lp, lb, ub, nzcnt, ind, val,
-                                        space, surplus, which)
+                                         space, surplus, which)
     check_status(env, status)
-    return (lb.value(), ub.value(), LAU.int_array_to_list(ind, space),
-            LAU.double_array_to_list(val, space))
+    return (lb.value(), ub.value(), LAU.array_to_list(ind, space),
+            LAU.array_to_list(val, space))
 
 def delsolnpoolfilters(env, lp, begin, end):
-    status = CR.CPXXdelsolnpoolfilters(env, lp, begin, end)
-    check_status(env, status)
-    return [0]
+    delfn = CR.CPXXdelsolnpoolfilters
+    _delbyrange(delfn, env, lp, begin, end)
 
 def getsolnpoolfiltername(env, lp, which, enc=default_encoding):
-    inoutlist = [0]
-    status = CR.CPXXgetsolnpoolfiltername(env, lp, inoutlist, which)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inoutlist == [0]:
-        return cpx_encode_noop3("", enc)
-    status = CR.CPXXgetsolnpoolfiltername(env, lp, inoutlist, which)
-    check_status(env, status)
-    return cpx_encode_noop3(inoutlist[0], enc)
+    namefn = CR.CPXXgetsolnpoolfiltername
+    return _getname(env, lp, which, enc, namefn, index_first=False)
 
 def getsolnpoolnumfilters(env, lp):
     return CR.CPXXgetsolnpoolnumfilters(env, lp)
 
-def fltwrite(env, lp, filename):
-    status = CR.CPXXfltwrite(env, lp, filename)
+def fltwrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXfltwrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
-def readcopysolnpoolfilters(env, lp, filename):
-    status = CR.CPXXreadcopysolnpoolfilters(env, lp, filename)
+def readcopysolnpoolfilters(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopysolnpoolfilters(env, lp,
+                                            cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 def getsolnpoolfilterindex(env, lp, colname, enc=default_encoding):
     index = CR.intPtr()
@@ -2623,9 +2809,8 @@ def getsolnpoolfiltertype(env, lp, index):
     return type_.value()
 
 def delsolnpoolsolns(env, lp, begin, end):
-    status = CR.CPXXdelsolnpoolsolns(env, lp, begin, end)
-    check_status(env, status)
-    return [0]
+    delfn = CR.CPXXdelsolnpoolsolns
+    _delbyrange(delfn, env, lp, begin, end)
 
 def getsolnpoolnumsolns(env, lp):
     return CR.CPXXgetsolnpoolnumsolns(env, lp)
@@ -2648,25 +2833,18 @@ def getsolnpoolmeanobjval(env, lp):
     return objval.value()
 
 def getsolnpoolsolnname(env, lp, which, enc=default_encoding):
-    inoutlist = [0]
-    status = CR.CPXXgetsolnpoolsolnname(env, lp, inoutlist, which)
-    if status != CR.CPXERR_NEGATIVE_SURPLUS:
-        check_status(env, status)
-    if inoutlist == [0]:
-        return cpx_encode_noop3("", enc)
-    status = CR.CPXXgetsolnpoolsolnname(env, lp, inoutlist, which)
-    check_status(env, status)
-    return cpx_encode_noop3(inoutlist[0], enc)
+    namefn = CR.CPXXgetsolnpoolsolnname
+    return _getname(env, lp, which, enc, namefn, index_first=False)
 
-def solwritesolnpool(env, lp, soln, filename):
-    status = CR.CPXXsolwritesolnpool(env, lp, soln, filename)
+def solwritesolnpool(env, lp, soln, filename, enc=default_encoding):
+    status = CR.CPXXsolwritesolnpool(env, lp, soln,
+                                     cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
-def solwritesolnpoolall(env, lp, filename):
-    status = CR.CPXXsolwritesolnpoolall(env, lp, filename)
+def solwritesolnpoolall(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXsolwritesolnpoolall(env, lp,
+                                        cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 def getsolnpoolobjval(env, lp, soln):
     obj = CR.doublePtr()
@@ -2675,25 +2853,25 @@ def getsolnpoolobjval(env, lp, soln):
     return obj.value()
 
 def getsolnpoolx(env, lp, soln, begin, end):
-    xlen = end - begin + 1
+    xlen = _rangelen(begin, end)
     x    = _safeDoubleArray(xlen)
     status = CR.CPXXgetsolnpoolx(env, lp, soln, x, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(x, xlen)
+    return LAU.array_to_list(x, xlen)
 
 def getsolnpoolslack(env, lp, soln, begin, end):
-    slacklen = end - begin + 1
+    slacklen = _rangelen(begin, end)
     slack    = _safeDoubleArray(slacklen)
     status = CR.CPXXgetsolnpoolslack(env, lp, soln, slack, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(slack, slacklen)
+    return LAU.array_to_list(slack, slacklen)
 
 def getsolnpoolqconstrslack(env, lp, soln, begin, end):
-    qlen = end - begin + 1
+    qlen = _rangelen(begin, end)
     q    = _safeDoubleArray(qlen)
     status = CR.CPXXgetsolnpoolqconstrslack(env, lp, soln, q, begin, end)
     check_status(env, status)
-    return LAU.double_array_to_list(q, qlen)
+    return LAU.array_to_list(q, qlen)
 
 def getsolnpoolintquality(env, lp, soln, what):
     quality = CR.intPtr()
@@ -2712,19 +2890,19 @@ def getsolnpooldblquality(env, lp, soln, what):
 # Initial data
 
 
-
 def copystart(env, lp, cstat, rstat, cprim, rprim, cdual, rdual):
     status = CR.CPXXcopystart(env, lp,
-                           LAU.int_list_to_array(cstat), LAU.int_list_to_array(rstat),
-                           LAU.double_list_to_array(cprim), LAU.double_list_to_array(rprim),
-                           LAU.double_list_to_array(cdual), LAU.double_list_to_array(rdual))
+                              LAU.int_list_to_array(cstat),
+                              LAU.int_list_to_array(rstat),
+                              LAU.double_list_to_array(cprim),
+                              LAU.double_list_to_array(rprim),
+                              LAU.double_list_to_array(cdual),
+                              LAU.double_list_to_array(rdual))
     check_status(env, status)
-    return
 
-def readcopybase(env, lp, filename):
-    status = CR.CPXXreadcopybase(env, lp, filename)
+def readcopybase(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopybase(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 def getorder(env, lp):
     count = CR.intPtr()
@@ -2742,29 +2920,28 @@ def getorder(env, lp):
     dir_ = _safeIntArray(space)
     status = CR.CPXXgetorder(env, lp, count, ind, pri, dir_, space, surplus)
     check_status(env, status)
-    return (LAU.int_array_to_list(ind, space), LAU.int_array_to_list(pri, space),
-            LAU.int_array_to_list(dir_, space))
+    return (LAU.array_to_list(ind, space), LAU.array_to_list(pri, space),
+            LAU.array_to_list(dir_, space))
 
 def copyorder(env, lp, indices, priority, direction):
-    status = CR.CPXXcopyorder(env, lp, len(indices), LAU.int_list_to_array(indices),
-                             LAU.int_list_to_array(priority), LAU.int_list_to_array(direction))
+    status = CR.CPXXcopyorder(env, lp, len(indices),
+                              LAU.int_list_to_array(indices),
+                              LAU.int_list_to_array(priority),
+                              LAU.int_list_to_array(direction))
     check_status(env, status)
-    return
 
-def readcopyorder(env, lp, filename):
-    status = CR.CPXXreadcopyorder(env, lp, filename)
+def readcopyorder(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopyorder(env, lp,
+                                  cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
-def ordwrite(env, lp, filename):
-    status = CR.CPXXordwrite(env, lp, filename)
+def ordwrite(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXordwrite(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return    
 
-def readcopysol(env, lp, filename):
-    status = CR.CPXXreadcopysol(env, lp, filename)
+def readcopysol(env, lp, filename, enc=default_encoding):
+    status = CR.CPXXreadcopysol(env, lp, cpx_decode_noop3(filename, enc))
     check_status(env, status)
-    return
 
 # handle the lock for parallel callbacks
 
@@ -3038,7 +3215,7 @@ def gethist(env, lp, key):
     hist   = _safeIntArray(space)
     status = CR.CPXEgethist(env, lp, cpx_decode(key, default_encoding), hist)
     check_status(env, status)
-    return LAU.int_array_to_list(hist, space)
+    return LAU.array_to_list(hist, space)
 
 # get solution quality metrics
 
@@ -3049,5 +3226,5 @@ def getqualitymetrics(env, lp, soln):
     idata  = _safeIntArray(ispace)
     status = CR.CPXEgetqualitymetrics(env, lp, soln, data, idata)
     check_status(env, status)
-    return [LAU.int_array_to_list(idata, ispace),
-            LAU.double_array_to_list(data, space)]
+    return [LAU.array_to_list(idata, ispace),
+            LAU.array_to_list(data, space)]

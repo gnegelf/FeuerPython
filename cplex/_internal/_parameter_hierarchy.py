@@ -1,9 +1,9 @@
 # --------------------------------------------------------------------------
-# Version 12.6.3
+# Version 12.7.1
 # --------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2000, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2000, 2017. All Rights Reserved.
 # 
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -38,6 +38,21 @@ def barrier_members(env, parent):
                 ordering = NumParameter(env, BarrierOrdering, parent, 'ordering', bar_order_constants),
                 qcpconvergetol = NumParameter(env, BarrierQCPConvergeTol, parent, 'qcpconvergetol'),
                 startalg = NumParameter(env, BarrierStartAlg, parent, 'startalg', bar_start_alg_constants),
+                )
+
+def benders_tolerances_members(env, parent):
+    return dict(_name = "tolerances",
+                help = lambda : "Numerical tolerances for Benders cuts.",
+                feasibilitycut = NumParameter(env, BendersTolerancesfeasibilitycut, parent, 'feasibilitycut'),
+                optimalitycut = NumParameter(env, BendersTolerancesoptimalitycut, parent, 'optimalitycut'),
+                )
+
+def benders_members(env, parent):
+    return dict(_name = "benders",
+                help = lambda : "Parameters for benders optimization.",
+                strategy = NumParameter(env, BendersStrategy, parent, 'strategy', benders_strategy_constants),
+                tolerances = ParameterGroup(env, benders_tolerances_members, parent),
+                workeralgorithm = NumParameter(env, BendersWorkerAlgorithm, parent, 'workeralgorithm', subalg_constants),
                 )
 
 def conflict_members(env, parent):
@@ -92,6 +107,7 @@ def mip_cuts_members(env, parent):
                 mcfcut = NumParameter(env, MIPCutsMCFCut, parent, 'mcfcut', agg_constants),
                 mircut = NumParameter(env, MIPCutsMIRCut, parent, 'mircut', agg_constants),
                 pathcut = NumParameter(env, MIPCutsPathCut, parent, 'pathcut', agg_constants),
+                rlt = NumParameter(env, MIPCutsRLT, parent, 'rlt', v_agg_constants),
                 zerohalfcut = NumParameter(env, MIPCutsZeroHalfCut, parent, 'zerohalfcut', agg_constants),
                 )
 
@@ -224,7 +240,7 @@ def read_members(env, parent):
                 help = lambda : "Problem read parameters.",
                 apiencoding = StrParameter(env, ReadAPIEncoding, parent, 'apiencoding'),
                 constraints = NumParameter(env, ReadConstraints, parent, 'constraints'),
-                datacheck = NumParameter(env, ReadDataCheck, parent, 'datacheck', off_on_constants),
+                datacheck = NumParameter(env, ReadDataCheck, parent, 'datacheck', datacheck_constants),
                 fileencoding = StrParameter(env, ReadFileEncoding, parent, 'fileencoding'),
                 nonzeros = NumParameter(env, ReadNonzeros, parent, 'nonzeros'),
                 qpnonzeros = NumParameter(env, ReadQPNonzeros, parent, 'qpnonzeros'),
@@ -236,6 +252,7 @@ def sifting_members(env, parent):
     return dict(_name = "sifting",
                 help = lambda : "Parameters for sifting optimization.",
                 algorithm = NumParameter(env, SiftingAlgorithm, parent, 'algorithm', sift_alg_constants),
+                simplex = NumParameter(env, SiftingSimplex, parent, 'simplex', off_on_constants),
                 display = NumParameter(env, SiftingDisplay, parent, 'display', display_constants),
                 iterations = NumParameter(env, SiftingIterations, parent, 'iterations'),
                 )
@@ -294,6 +311,7 @@ def root_members(env, parent):
                 help = lambda : "CPLEX parameter hierarchy.",
                 advance = NumParameter(env, setAdvance, parent, 'advance', advance_constants),
                 barrier = ParameterGroup(env, barrier_members, parent),
+                benders = ParameterGroup(env, benders_members, parent),
                 clocktype = NumParameter(env, setClockType, parent, 'clocktype', clocktype_constants),
                 conflict = ParameterGroup(env, conflict_members, parent),
                 cpumask = StrParameter(env, setCPUmask, parent, 'cpumask'),
@@ -313,7 +331,6 @@ def root_members(env, parent):
                 sifting = ParameterGroup(env, sifting_members, parent),
                 simplex = ParameterGroup(env, simplex_members, parent),
                 solutiontype = NumParameter(env, setSolutionType, parent, 'solutiontype', solutiontype_constants),
-                solutiontarget = NumParameter(env, setSolutionTarget, parent, 'solutiontarget', solutiontarget_constants),
                 threads = NumParameter(env, setThreads, parent, 'threads'),
                 timelimit = NumParameter(env, setTimeLimit, parent, 'timelimit'),
                 tune = ParameterGroup(env, tune_members, parent),

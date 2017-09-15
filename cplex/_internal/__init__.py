@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Licensed Materials - Property of IBM
 # 5725-A06 5725-A29 5724-Y48 5724-Y49 5724-Y54 5724-Y55 5655-Y21
-# Copyright IBM Corporation 2008, 2015. All Rights Reserved.
+# Copyright IBM Corporation 2008, 2017. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with
@@ -17,7 +17,6 @@
 import os
 import sys
 
-
 from . import _aux_functions
 from . import _list_array_utils
 from . import _ostream
@@ -29,9 +28,14 @@ from . import _parameter_hierarchy
 from . import _subinterfaces
 from . import _pycplex
 from . import _parameters_auto
+from . import _anno
+from . import _pwl
 from ..exceptions import CplexError
 
-__all__ = ["Environment", "_aux_functions", "_list_array_utils", "_ostream", "_procedural", "_constants", "_matrices", "_parameter_classes", "_subinterfaces", "_pycplex", "_parameters_auto"]
+__all__ = ["Environment", "_aux_functions", "_list_array_utils",
+           "_ostream", "_procedural", "_constants", "_matrices",
+           "_parameter_classes", "_subinterfaces", "_pycplex",
+           "_parameters_auto", "_anno", "_pwl", "ProblemType"]
 
 
 class ProblemType:
@@ -112,6 +116,7 @@ class Environment(object):
         self._e = _procedural.openCPLEX()
         self.parameters = _parameter_classes.RootParameterGroup(
             self, _parameter_hierarchy.root_members)
+        _procedural.setcpxterminate(self._e)
         _procedural.setpyterminate(self._e)
         _procedural.set_status_checker()
         self._lock = _procedural.initlock()
@@ -124,6 +129,7 @@ class Environment(object):
         """Frees all of the data structures associated with CPLEX."""
         if self._disposed:
             return
+        self._disposed = True
         for chnl_idx in self._streams.keys():
             self._delete_stream(chnl_idx)
         if self._lock and self._e:
@@ -131,7 +137,6 @@ class Environment(object):
         if self._e:
             _procedural.closeCPLEX(self._e)
             self._e = None
-        self._disposed = True
 
     def __del__(self):
         """non-public"""
@@ -370,3 +375,8 @@ class Environment(object):
     def get_dettime(self):
         """Returns the current deterministic time in ticks."""
         return _procedural.getdettime(self._e)
+
+    @property
+    def _apienc(self):
+        """Get the current api encoding."""
+        return self.parameters.read.apiencoding.get()
