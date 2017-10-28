@@ -52,9 +52,13 @@ class StateconstraintCallback(LazyConstraintCallback):
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = (b_Lext[0,minIdx]))
 
 full = 0
-for timeVar in range(30,31,10):
-    for countVar in range(160,161,5):
-        matlabData = tables.open_file('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
+feuer = 0
+for timeVar in range(60,61,10):
+    for countVar in range(15,16,5):
+        if feuer:
+            matlabData = tables.open_file('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
+        else:
+            matlabData = tables.open_file('data/contaData%d_%d_%d.mat' % (countVar,timeVar,5))
         A2=matlabData.root.A2.data[...]
         Amipred=scipy.sparse.csc_matrix((matlabData.root.A2.data[...],matlabData.root.A2.ir[...], matlabData.root.A2.jc[...]))
         Amipred=scipy.sparse.lil_matrix(Amipred)
@@ -142,36 +146,63 @@ for timeVar in range(30,31,10):
         except CplexError as exc:
             print(exc)
             #print("LazyCbcalls: %i",lazy_cb.number_of_calls)
-        if (status == 101 or status== 102):
-            print(model.solution.status[model.solution.get_status()])
-            #print(modelFull.solution.status[modelFull.solution.get_status()]) 
-            numrows = model.linear_constraints.get_num()
-            numcols = model.variables.get_num()
-            print("Solution status = ", model.solution.get_status(), ":", end=' ')
-            # the following line prints the corresponding string
-            print(model.solution.status[model.solution.get_status()])
-            #print("Solution value  = ", model.solution.get_objective_value())
-            
-            slack = model.solution.get_linear_slacks()
-            x = model.solution.get_values()
-            #x2= model2.solution.get_values()
-            x_k=np.transpose(np.array([x]))
-            #state=b_Uext-np.matmul(Amipext,x_k)
-            state2=Amipext.dot(x_k)-np.transpose(b_Lext)
-            print("The duration = ", duration)
-            print("saving result and duration")
-            print(model.solution.get_status_string())
-            if full:
-                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
-            else:
-                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
-        if (status == 107):
-            if full:
-                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
-            else:
-                scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+        if (feuer):
+            if (status == 101 or status== 102):
+                print(model.solution.status[model.solution.get_status()])
+                #print(modelFull.solution.status[modelFull.solution.get_status()]) 
+                numrows = model.linear_constraints.get_num()
+                numcols = model.variables.get_num()
+                print("Solution status = ", model.solution.get_status(), ":", end=' ')
+                # the following line prints the corresponding string
+                print(model.solution.status[model.solution.get_status()])
+                #print("Solution value  = ", model.solution.get_objective_value())
+                
+                slack = model.solution.get_linear_slacks()
+                x = model.solution.get_values()
+                #x2= model2.solution.get_values()
+                x_k=np.transpose(np.array([x]))
+                #state=b_Uext-np.matmul(Amipext,x_k)
+                state2=Amipext.dot(x_k)-np.transpose(b_Lext)
+                print("The duration = ", duration)
+                print("saving result and duration")
+                print(model.solution.get_status_string())
+                if full:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                else:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+            if (status == 107):
+                if full:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                else:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+        else:
+            if (status == 101 or status== 102):
+                print(model.solution.status[model.solution.get_status()])
+                #print(modelFull.solution.status[modelFull.solution.get_status()]) 
+                numrows = model.linear_constraints.get_num()
+                numcols = model.variables.get_num()
+                print("Solution status = ", model.solution.get_status(), ":", end=' ')
+                # the following line prints the corresponding string
+                print(model.solution.status[model.solution.get_status()])
+                #print("Solution value  = ", model.solution.get_objective_value())
+                
+                slack = model.solution.get_linear_slacks()
+                x = model.solution.get_values()
+                #x2= model2.solution.get_values()
+                x_k=np.transpose(np.array([x]))
+                #state=b_Uext-np.matmul(Amipext,x_k)
+                state2=Amipext.dot(x_k)-np.transpose(b_Lext)
+                print("The duration = ", duration)
+                print("saving result and duration")
+                print(model.solution.get_status_string())
+                if full:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                else:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+            if (status == 107):
+                if full:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                else:
+                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
 
-
-
-
-
+                
