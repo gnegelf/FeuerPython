@@ -54,7 +54,7 @@ class StateconstraintCallback(LazyConstraintCallback):
 full = 0
 feuer = 0
 for timeVar in range(60,61,10):
-    for countVar in range(15,16,5):
+    for countVar in range(30,31,5):
         if feuer:
             matlabData = tables.open_file('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         else:
@@ -127,15 +127,27 @@ for timeVar in range(60,61,10):
         try:
             start=model.get_time()
             #model.parameters.mip.tolerances.mipgap.set(0.00001)
-            model.parameters.timelimit.set(5000.0)
+            model.parameters.timelimit.set(20000.0)
             model.parameters.mip.display.set(2)
             if not full:
                 print("Starting to solve model with callbacks")
             else:
                 print("Starting to solve model without callbacks")
             #model.set_warning_stream('feuerWarning%d_%d' % (countVar,timeVar))
-            model.set_log_stream('feuerLogfile%d_%d.log' % (countVar,timeVar))
-            model.set_results_stream('feuerResult%d_%d' % (countVar,timeVar))
+            if feuer:
+                if full:
+                    model.set_log_stream('ResultLogs/feuerFullLogfile%d_%d.log' % (countVar,timeVar))
+                    model.set_results_stream('ResultLogs/feuerFullResult%d_%d' % (countVar,timeVar))
+                else:
+                    model.set_log_stream('ResultLogs/feuerLogfile%d_%d.log' % (countVar,timeVar))
+                    model.set_results_stream('ResultLogs/feuerResult%d_%d' % (countVar,timeVar))
+            else:
+                if full:
+                    model.set_log_stream('ResultLogs/contaFullLogfile%d_%d.log' % (countVar,timeVar))
+                    model.set_results_stream('ResultLogs/contaFullResult%d_%d' % (countVar,timeVar))
+                else:
+                    model.set_log_stream('ResultLogs/contaLogfile%d_%d.log' % (countVar,timeVar))
+                    model.set_results_stream('ResultLogs/contaResult%d_%d' % (countVar,timeVar))        
             model.solve()
             status=model.solution.get_status()
             print(model.solution.MIP.get_mip_relative_gap())
@@ -167,14 +179,14 @@ for timeVar in range(60,61,10):
                 print("saving result and duration")
                 print(model.solution.get_status_string())
                 if full:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
                 else:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
             if (status == 107):
                 if full:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
                 else:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
         else:
             if (status == 101 or status== 102):
                 print(model.solution.status[model.solution.get_status()])
@@ -196,13 +208,13 @@ for timeVar in range(60,61,10):
                 print("saving result and duration")
                 print(model.solution.get_status_string())
                 if full:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
                 else:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
             if (status == 107):
                 if full:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
                 else:
-                    scipy.io.savemat('/home/fabian/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
 
                 

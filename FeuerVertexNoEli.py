@@ -13,8 +13,9 @@ from cplex.exceptions import CplexError
 
 
 for tt in range(60,61,10):
-    for xx in range(10,11,1):
+    for xx in range(10,21,1):
         matlabData=scipy.io.loadmat('data/feuerDataNoElimination%d_%d_%d.mat' % (xx,tt,2))
+        
         Amip=scipy.sparse.lil_matrix(matlabData['A'])
         b_L=matlabData['b_L']
         b_U=matlabData['b_U']
@@ -30,9 +31,11 @@ for tt in range(60,61,10):
         Acol=Amip.shape[1]
         #define reduced ones
         names=['']*Acol
-        
+        #print cplex.Version
         modelFull=cplex.Cplex()
         model = cplex.Cplex()
+        #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
+        model.parameters.simplex.tolerances.feasibility.set(0.0001)
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
             model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1000.0],types=["C"])
@@ -44,7 +47,8 @@ for tt in range(60,61,10):
             modelFull.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1.0],types=["B"])
         
         Acoo=Amip.tocoo()
-        
+        #model.write('feuerLpNoEliminationEmpty%d_%d_%d' % (xx,tt,2),'lp')
+
         print(contVarN)
         print(intVarN)
         rows=[];
@@ -63,11 +67,17 @@ for tt in range(60,61,10):
         #model.linear_constraints.add(lin_expr = rowsinitial, senses = ["G"]*Acol, rhs = np.transpose(initialL).tolist()[0])
         model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
         model.parameters.timelimit.set(20000.0)
+        
+        
         print('added all constraints')  
-        #model.write('addConstraintsFeas','lp')
-
+        model.write('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
+        model=cplex.Cplex()
+        model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
+        model.parameters.timelimit.set(20000.0)
+        model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
         try:
             start=model.get_time()
+            #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
             #model.parameters.mip.tolerances.mipgap.set(0.1)
             #model.parameters.dettimelimit.set(50000.0)
             model.solve()
