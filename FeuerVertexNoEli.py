@@ -35,7 +35,7 @@ for tt in range(30,61,10):
         modelFull=cplex.Cplex()
         model = cplex.Cplex()
         #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
-        #model.parameters.simplex.tolerances.feasibility.set(0.001)
+        model.parameters.simplex.tolerances.feasibility.set(0.001)
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
             model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1000.0],types=["C"])
