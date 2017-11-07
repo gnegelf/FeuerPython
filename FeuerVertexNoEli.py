@@ -12,7 +12,7 @@ import itertools
 from cplex.exceptions import CplexError
 
 
-for tt in range(60,61,10):
+for tt in range(30,61,10):
     for xx in range(10,21,1):
         matlabData=scipy.io.loadmat('data/feuerDataNoElimination%d_%d_%d.mat' % (xx,tt,2))
         
@@ -35,7 +35,7 @@ for tt in range(60,61,10):
         modelFull=cplex.Cplex()
         model = cplex.Cplex()
         #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
-        model.parameters.simplex.tolerances.feasibility.set(0.0001)
+        #model.parameters.simplex.tolerances.feasibility.set(0.001)
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
             model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1000.0],types=["C"])
@@ -60,7 +60,7 @@ for tt in range(60,61,10):
         for i,j,v in itertools.izip(Acoo.row, Acoo.col, Acoo.data):
             rows[i][0].append(names[j])
             rows[i][1].append(v)
-        
+        #model.parameters.emphasis.mip.set(1)
         model.linear_constraints.add(lin_expr = rows, senses = ["L"]*Arow, rhs = np.transpose(b_U).tolist()[0])
         model.linear_constraints.add(lin_expr = rows, senses = ["G"]*Arow, rhs = np.transpose(b_L).tolist()[0])
         #model.linear_constraints.add(lin_expr = rowsinitial, senses = ["L"]*Acol, rhs = np.transpose(initialU).tolist()[0])
@@ -70,15 +70,16 @@ for tt in range(60,61,10):
         
         
         print('added all constraints')  
-        model.write('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
-        model=cplex.Cplex()
-        model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
-        model.parameters.timelimit.set(20000.0)
-        model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
+        #model.write('noElixn%dtn%d' %(xx,tt),'lp')
+        
+        #model=cplex.Cplex()
+        #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
+        #model.parameters.timelimit.set(20000.0)
+        #model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
         try:
             start=model.get_time()
             #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
-            #model.parameters.mip.tolerances.mipgap.set(0.1)
+            #model.parameters.mip.tolerances.mipgap.set(0.01)
             #model.parameters.dettimelimit.set(50000.0)
             model.solve()
             #model.write('lpInfeas','lp')
