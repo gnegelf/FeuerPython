@@ -13,12 +13,8 @@ from cplex.exceptions import CplexError
 
 
 for tt in range(30,61,10):
-    lbrange=10
-    if tt==40:
-        lbrange=16
-    for xx in range(lbrange,21,1):
+    for xx in range(10,21,1):
         matlabData=scipy.io.loadmat('data/feuerDataNoElimination%d_%d_%d.mat' % (xx,tt,2))
-        
         Amip=scipy.sparse.lil_matrix(matlabData['A'])
         b_L=matlabData['b_L']
         b_U=matlabData['b_U']
@@ -38,8 +34,8 @@ for tt in range(30,61,10):
         modelFull=cplex.Cplex()
         model = cplex.Cplex()
         #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
-        if not(xx==10 and tt==30):
-            model.parameters.simplex.tolerances.feasibility.set(0.001)
+        #if not(xx==10 and tt==30):
+        #    #model.parameters.simplex.tolerances.feasibility.set(0.1)
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
             model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1000.0],types=["C"])
@@ -83,7 +79,9 @@ for tt in range(30,61,10):
         try:
             start=model.get_time()
             #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
-            #model.parameters.mip.tolerances.mipgap.set(0.01)
+            #model.parameters.mip.tolerances.mipgap.set(0.001)
+            model.parameters.preprocessing.aggregator.set(0)
+            #model.parameters.preprocessing.numpass.set(1)
             #model.parameters.dettimelimit.set(50000.0)
             model.solve()
             #model.write('lpInfeas','lp')
