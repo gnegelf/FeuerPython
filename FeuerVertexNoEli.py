@@ -35,7 +35,7 @@ for tt in range(30,61,10):
         model = cplex.Cplex()
         #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
         #if not(xx==10 and tt==30):
-        #    #model.parameters.simplex.tolerances.feasibility.set(0.1)
+        model.parameters.simplex.tolerances.feasibility.set(0.001)
         for i in range(1,contVarN+1):
             names[i-1]="cont"+str(i-1)
             model.variables.add(obj=[float(c[i-1])],names=[names[i-1]],lb=[0.0],ub=[1000.0],types=["C"])
@@ -65,7 +65,7 @@ for tt in range(30,61,10):
         model.linear_constraints.add(lin_expr = rows, senses = ["G"]*Arow, rhs = np.transpose(b_L).tolist()[0])
         #model.linear_constraints.add(lin_expr = rowsinitial, senses = ["L"]*Acol, rhs = np.transpose(initialU).tolist()[0])
         #model.linear_constraints.add(lin_expr = rowsinitial, senses = ["G"]*Acol, rhs = np.transpose(initialL).tolist()[0])
-        model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
+        #model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
         model.parameters.timelimit.set(20000.0)
         
         
@@ -81,6 +81,7 @@ for tt in range(30,61,10):
             #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
             #model.parameters.mip.tolerances.mipgap.set(0.001)
             model.parameters.preprocessing.aggregator.set(0)
+            model.parameters.preprocessing.boundstrengthen.set(0)
             #model.parameters.preprocessing.numpass.set(1)
             #model.parameters.dettimelimit.set(50000.0)
             model.solve()
