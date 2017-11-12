@@ -81,7 +81,7 @@ for tt in range(30,61,10):
             #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
             #model.parameters.mip.tolerances.mipgap.set(0.001)
             model.parameters.preprocessing.aggregator.set(0)
-            model.parameters.preprocessing.boundstrengthen.set(0)
+            model.parameters.preprocessing.boundstrength.set(0)
             #model.parameters.preprocessing.numpass.set(1)
             #model.parameters.dettimelimit.set(50000.0)
             model.solve()
