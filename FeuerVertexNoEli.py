@@ -75,7 +75,7 @@ for tt in range(30,61,10):
         #model=cplex.Cplex()
         #model.read('addConstraintsFeas%dtn%d' %(xx,tt),'lp')
         #model.parameters.timelimit.set(20000.0)
-        #model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
+        model.set_results_stream('ResultLogs/feuerNoEliResult%d_%ds%d' % (xx,tt,2))
         try:
             start=model.get_time()
             #model.write('feuerLpNoElimination%d_%d_%d' % (xx,tt,2),'lp')
