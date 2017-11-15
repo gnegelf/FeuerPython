@@ -12,7 +12,7 @@ import itertools
 from cplex.exceptions import CplexError
 
 
-for tt in range(30,61,10):
+for tt in range(40,61,10):
     lb=10
     if tt==40:
         lb=13
