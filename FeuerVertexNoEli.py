@@ -13,7 +13,10 @@ from cplex.exceptions import CplexError
 
 
 for tt in range(30,61,10):
-    for xx in range(10,21,1):
+    lb=10
+    if tt==40:
+        lb=13
+    for xx in range(lb,21,1):
         matlabData=scipy.io.loadmat('data/feuerDataNoElimination%d_%d_%d.mat' % (xx,tt,2))
         Amip=scipy.sparse.lil_matrix(matlabData['A'])
         b_L=matlabData['b_L']
