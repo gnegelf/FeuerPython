@@ -12,11 +12,11 @@ import itertools
 from cplex.exceptions import CplexError
 
 
-for tt in range(40,61,10):
-    lb=10
+for tt in range(30,31,10):
+    lb=20
     if tt==40:
         lb=13
-    for xx in range(lb,21,1):
+    for xx in range(lb,26,1):
         matlabData=scipy.io.loadmat('data/feuerDataNoElimination%d_%d_%d.mat' % (xx,tt,2))
         Amip=scipy.sparse.lil_matrix(matlabData['A'])
         b_L=matlabData['b_L']
