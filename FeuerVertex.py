@@ -5,6 +5,7 @@ import cplex
 #from cplex.callbacks import LazyConstraintCallback
 import tables
 import numpy as np
+import sys
 import scipy
 import scipy.sparse
 import scipy.sparse.linalg
@@ -51,10 +52,15 @@ class StateconstraintCallback(LazyConstraintCallback):
                 #print("Adding cut: %d" % (storeIdx))
                 self.add(constraint=cplex.SparsePair(thevars,thecoefs), sense = "G", rhs = (b_Lext[0,minIdx]))
 
-full = 0
-feuer = 0
-for timeVar in range(60,61,10):
-    for countVar in range(30,31,5):
+
+full = int(sys.argv[1])
+feuer = int(sys.argv[2])
+xnL = int(sys.argv[3])
+xnU = int(sys.argv[4])
+tnL = int(sys.argv[5])
+tnU = int(sys.argv[6])
+for timeVar in range(tnL,tnU+1,10):
+    for countVar in range(xnL,xnU+1,10):
         if feuer:
             matlabData = tables.open_file('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         else:
