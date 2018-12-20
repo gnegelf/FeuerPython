@@ -185,14 +185,14 @@ for timeVar in range(tnL,tnU+1,10):
                 print("saving result and duration")
                 print(model.solution.get_status_string())
                 if full:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
                 else:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
             if (status == 107):
                 if full:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/stateFullxn%dtn%ds%d.mat' % (xn,tn,2), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
                 else:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/statexn%dtn%ds%d.mat' % (xn,tn,2),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
         else:
             if (status == 101 or status== 102):
                 print(model.solution.status[model.solution.get_status()])
@@ -214,13 +214,13 @@ for timeVar in range(tnL,tnU+1,10):
                 print("saving result and duration")
                 print(model.solution.get_status_string())
                 if full:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value())]))    
                 else:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('cbnum',lazy_cb.number_of_calls)]))
             if (status == 107):
                 if full:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/contaStateFullxn%dtn%ds%d.mat' % (xn,tn,5), dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))      
                 else:
-                    scipy.io.savemat('/Users/fabiangnegel/MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
+                    scipy.io.savemat('../MIPDECO/Feuerprojekt/Results/contaStatexn%dtn%ds%d.mat' % (xn,tn,5),  dict([('x_k',x),('duration',duration),('objective',model.solution.get_objective_value()),('gap',model.solution.MIP.get_mip_relative_gap())]))
 
                 
