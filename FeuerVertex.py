@@ -11,7 +11,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 import scipy.io
 import itertools
-import h5py
+
 from cplex.exceptions import CplexError
 from cplex.callbacks import LazyConstraintCallback
 from cplex.callbacks import BranchCallback
