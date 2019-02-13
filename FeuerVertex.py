@@ -59,8 +59,10 @@ xnL = int(sys.argv[3])
 xnU = int(sys.argv[4])
 tnL = int(sys.argv[5])
 tnU = int(sys.argv[6])
-for timeVar in range(tnL,tnU+1,10):
-    for countVar in range(xnL,xnU+1,10):
+stepX = int(sys.argv[7])
+stepT = int(sys.argv[8])
+for timeVar in range(tnL,tnU+1,stepT):
+    for countVar in range(xnL,xnU+1,stepX):
         if feuer:
             matlabData = tables.open_file('data/feuerData%d_%d_%d.mat' % (countVar,timeVar,2))
         else:
@@ -132,7 +134,8 @@ for timeVar in range(tnL,tnU+1,10):
         print(model.get_version())
         try:
             start=model.get_time()
-            #model.parameters.mip.tolerances.mipgap.set(0.00001)
+            if not feuer:
+                model.parameters.mip.tolerances.mipgap.set(0.01)
             model.parameters.timelimit.set(20000.0)
             model.parameters.mip.display.set(2)
             if not full:
